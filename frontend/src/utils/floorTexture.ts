@@ -1,6 +1,6 @@
 // Builds ONE canvas texture covering the whole plan, with each detected room painted in its
 // floor material. Shared by the 2D editor (as an <image>) and the 3D viewer (as a map).
-import type { FloorMaterialId, RoomStyle, Wall } from '../types'
+import type { FloorMaterialId, RoomKind, RoomStyle, Wall } from '../types'
 import { autoMaterial, materialInfo, patternTile } from './floorMaterials'
 import { boxPass, detectRooms, styleIndexForRoom } from './rooms'
 import type { RoomInfo, RoomLayout } from './rooms'
@@ -8,6 +8,7 @@ import type { RoomInfo, RoomLayout } from './rooms'
 export interface ResolvedRoom {
   room: RoomInfo
   material: FloorMaterialId
+  kind?: RoomKind
   name: string
   areaM2: number
   styleIndex: number
@@ -46,6 +47,7 @@ function build(walls: Wall[], styles: RoomStyle[]): FloorResult | null {
     return {
       room,
       material: st?.material ?? autoMaterial(room.areaCm2),
+      kind: st?.kind,
       name: st?.name?.trim() || `חדר ${room.id + 1}`,
       areaM2: room.areaCm2 / 10000,
       styleIndex: si,

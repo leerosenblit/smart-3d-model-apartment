@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import type { Tool } from '../../types'
 import { autoDetectWalls } from '../../utils/autoDetect'
+import { furnishApartment } from '../../utils/furnishApartment'
 
 const TOOLS: { id: Tool; label: string; icon: string; hint: string }[] = [
   { id: 'select', label: 'בחירה', icon: '↖', hint: 'בחירה והזזה' },
@@ -20,6 +21,8 @@ export function Toolbar2D({ onFit }: { onFit: () => void }) {
   const setOrtho = useAppStore((s) => s.setOrthoSnap)
   const grid = useAppStore((s) => s.gridSnap)
   const setGrid = useAppStore((s) => s.setGridSnap)
+  const autoFurnish = useAppStore((s) => s.autoFurnish)
+  const setAutoFurnish = useAppStore((s) => s.setAutoFurnish)
   const showFloors = useAppStore((s) => s.showFloors)
   const setShowFloors = useAppStore((s) => s.setShowFloors)
   const thickness = useAppStore((s) => s.newWallThicknessCm)
@@ -106,6 +109,24 @@ export function Toolbar2D({ onFit }: { onFit: () => void }) {
       <label className="flex items-center gap-1">
         <input type="checkbox" checked={grid} onChange={(e) => setGrid(e.target.checked)} /> הצמדה לרשת (5 ס"מ)
       </label>
+
+      <label className="flex items-center gap-1" title="לאחר זיהוי הקירות, רהט את חדרי השינה והסלון מהקטלוג">
+        <input type="checkbox" checked={autoFurnish} onChange={(e) => setAutoFurnish(e.target.checked)} /> ריהוט אוטומטי
+      </label>
+
+      <button
+        className="btn"
+        data-testid="furnish-now"
+        onClick={async () => {
+          const st = useAppStore.getState()
+          if (st.placedItems.length > 0 && !window.confirm('להחליף את כל הריהוט בריהוט אוטומטי? (ניתן לבטל עם בטל)')) return
+          const n = await furnishApartment({ replace: true })
+          if (n) st.toast(`רוהטו ${n} פריטים`, 'success')
+        }}
+        title="רהט את החדרים מהקטלוג"
+      >
+        🛋 רהט
+      </button>
 
       <label className="flex items-center gap-1">
         <input type="checkbox" checked={showFloors} onChange={(e) => setShowFloors(e.target.checked)} /> רצפות וחדרים

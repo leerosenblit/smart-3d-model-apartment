@@ -46,6 +46,65 @@ type DragState =
 const isTyping = (t: EventTarget | null): boolean =>
   t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')
 
+/** Simple top-down symbol for a furniture footprint, drawn in the item's local frame (back = top, front = bottom). */
+function ItemGlyph({ category, w, d }: { category: PlacedItem['category']; w: number; d: number }) {
+  const hw = w / 2
+  const hd = d / 2
+  const line = { stroke: '#0f172a', strokeOpacity: 0.45, strokeWidth: 1, vectorEffect: 'non-scaling-stroke' as const, fill: 'none' }
+  const soft = { fill: '#fff', fillOpacity: 0.55, stroke: '#0f172a', strokeOpacity: 0.35, strokeWidth: 1, vectorEffect: 'non-scaling-stroke' as const }
+  switch (category) {
+    case 'bed': {
+      const pw = Math.min(w * 0.4, 70)
+      const ph = Math.min(d * 0.14, 32)
+      return (
+        <g pointerEvents="none">
+          <rect x={-hw * 0.94} y={-hd * 0.96} width={pw} height={ph} rx={ph * 0.3} {...soft} />
+          <rect x={hw * 0.94 - pw} y={-hd * 0.96} width={pw} height={ph} rx={ph * 0.3} {...soft} />
+          <path d={`M ${-hw * 0.94} ${-hd + ph * 2.2} L ${hw * 0.94} ${-hd + ph * 2.2}`} {...line} />
+        </g>
+      )
+    }
+    case 'sofa':
+    case 'armchair': {
+      const back = Math.min(d * 0.28, 26)
+      const arm = Math.min(w * 0.1, 22)
+      return (
+        <g pointerEvents="none">
+          <rect x={-hw * 0.96} y={-hd * 0.96} width={w * 0.96} height={back} rx={back * 0.3} {...soft} />
+          <rect x={-hw * 0.96} y={-hd * 0.96} width={arm} height={d * 0.96} rx={arm * 0.3} {...soft} />
+          <rect x={hw * 0.96 - arm} y={-hd * 0.96} width={arm} height={d * 0.96} rx={arm * 0.3} {...soft} />
+        </g>
+      )
+    }
+    case 'chair': {
+      const back = d * 0.22
+      return (
+        <g pointerEvents="none">
+          <rect x={-hw * 0.9} y={-hd * 0.95} width={w * 0.9} height={back} rx={back * 0.4} {...soft} />
+          <rect x={-hw * 0.78} y={-hd * 0.95 + back} width={w * 0.78} height={d * 0.7} rx={4} {...line} />
+        </g>
+      )
+    }
+    case 'dining_table':
+    case 'coffee_table':
+    case 'desk':
+      return <rect x={-hw * 0.9} y={-hd * 0.82} width={w * 0.9} height={d * 0.82} rx={Math.min(w, d) * 0.08} {...line} pointerEvents="none" />
+    case 'wardrobe':
+    case 'storage':
+      return (
+        <g pointerEvents="none">
+          <path d={`M 0 ${-hd} L 0 ${hd}`} {...line} />
+          <circle cx={-hw * 0.08} cy={hd * 0.5} r={Math.min(3, d * 0.08)} fill="#0f172a" fillOpacity={0.5} />
+          <circle cx={hw * 0.08} cy={hd * 0.5} r={Math.min(3, d * 0.08)} fill="#0f172a" fillOpacity={0.5} />
+        </g>
+      )
+    case 'tv_unit':
+      return <rect x={-hw * 0.55} y={-hd * 0.5} width={w * 0.55} height={Math.min(d * 0.3, 6)} fill="#0f172a" fillOpacity={0.55} pointerEvents="none" />
+    default:
+      return null
+  }
+}
+
 export function Editor2D() {
   const wrapRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
@@ -109,7 +168,8 @@ export function Editor2D() {
   const fit = useCallback(() => {
     const b = sceneBounds({ walls, placedItems })
     let { minX, minY, maxX, maxY } = b
-    if (fpW) {
+    if (fpW && walls.length === 0) {
+      // no walls yet: frame the floorplan image; otherwise frame what has been built
       minX = Math.min(minX, 0)
       minY = Math.min(minY, 0)
       maxX = Math.max(maxX, fpW)
@@ -692,7 +752,7 @@ export function Editor2D() {
                     width={it.widthCm}
                     height={it.depthCm}
                     fill={color}
-                    fillOpacity={0.45}
+                    fillOpacity={0.35}
                     stroke={isSel ? BRAND : color}
                     strokeWidth={isSel ? 2.5 : 1.5}
                     strokeDasharray={generating ? '6 4' : undefined}
@@ -700,6 +760,8 @@ export function Editor2D() {
                   />
                   {/* front edge marker (local +z) */}
                   <line x1={-hw} y1={hd} x2={hw} y2={hd} stroke={isSel ? BRAND : '#1e293b'} strokeWidth={3} vectorEffect="non-scaling-stroke" opacity={0.7} />
+                  <ItemGlyph category={it.category} w={it.widthCm} d={it.depthCm} />
+                  {(isSel || k >= 1.1) && it.widthCm * k >= 80 && it.depthCm * k >= 28 && (
                   <g transform={`rotate(${-it.rotationDeg})`} pointerEvents="none">
                     <text textAnchor="middle" y={-fs * 0.2} fontSize={fs} fontWeight={700} fill="#0f172a" stroke="#fff" strokeWidth={fs * 0.18} paintOrder="stroke">
                       {it.title.length > 22 ? `${it.title.slice(0, 21)}…` : it.title}
@@ -708,6 +770,7 @@ export function Editor2D() {
                       {formatCm(it.widthCm, 0)}×{formatCm(it.depthCm, 0)} ס"מ
                     </text>
                   </g>
+                  )}
                   {isSel && (
                     <>
                       <line x1={0} y1={-hd} x2={0} y2={-hd - px(26)} stroke={BRAND} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />

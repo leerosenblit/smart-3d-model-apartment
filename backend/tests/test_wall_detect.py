@@ -122,3 +122,37 @@ def test_analyze_endpoint_without_scale_and_extra_upload_formats(client):
         make_plan().save(b, fmt)
         r = client.post("/api/floorplans/upload", files={"file": (f"p.{fmt.lower()}", b.getvalue(), mime)})
         assert r.status_code == 200 and r.json()["url"].endswith(".png"), fmt
+
+
+def _room_with_hollow_partition() -> Image.Image:
+    """Solid outer walls plus an interior partition drawn as TWO thin parallel lines (hollow wall)."""
+    img = Image.new("RGB", (460, 300), "white")
+    d = ImageDraw.Draw(img)
+    t = 10
+    d.rectangle([40, 40, 420, 40 + t], fill=BLUE)  # top
+    d.rectangle([40, 240, 420, 240 + t], fill=BLUE)  # bottom
+    d.rectangle([40, 40, 40 + t, 250], fill=BLUE)  # left
+    d.rectangle([410, 40, 420, 250], fill=BLUE)  # right
+    # hollow partition at x=230: two 1px dark lines 8px apart, running between top and bottom walls
+    d.line([(226, 50), (226, 240)], fill=(60, 60, 60), width=1)
+    d.line([(234, 50), (234, 240)], fill=(60, 60, 60), width=1)
+    # a dimension line OUTSIDE the building must not become a wall
+    d.line([(40, 15), (420, 15)], fill=(0, 0, 0), width=1)
+    return img
+
+
+def test_hollow_double_line_partition_is_found_and_flagged_thin():
+    walls = detect_walls(_room_with_hollow_partition(), PPC)
+    vertical = sorted((w for w in walls if w.x1 == w.x2), key=lambda w: w.x1)
+    assert len(vertical) == 3  # left, right and the hollow partition between them
+    partition = vertical[1]
+    assert partition.thin and abs(partition.x1 - 460) <= 12  # x = 230 px / 0.5 px per cm
+    assert not vertical[0].thin and not vertical[2].thin
+    assert all(w.y1 > 50 for w in walls if w.y1 == w.y2)  # the dimension line at y=15 px is ignored
+
+
+def test_scale_estimate_ignores_thin_partitions():
+    from app.services.wall_detect import detect_walls_auto
+
+    _, ppc, estimated = detect_walls_auto(_room_with_hollow_partition(), None)
+    assert estimated and abs(ppc - PPC) / PPC < 0.15  # solid 10 px walls = 20 cm -> 0.5 px/cm

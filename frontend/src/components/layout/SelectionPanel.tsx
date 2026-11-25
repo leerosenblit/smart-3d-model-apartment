@@ -4,6 +4,8 @@ import { useAppStore } from '../../store/useAppStore'
 import { computeClearances, wallLength } from '../../utils/geometry'
 import { formatCm, formatDims, formatIls } from '../../utils/format'
 import { FLOOR_MATERIALS, swatchUrl } from '../../utils/floorMaterials'
+import { ROOM_KINDS, ROOM_KIND_ORDER } from '../../utils/roomKinds'
+import type { RoomKind } from '../../types'
 import { parseRoomKey, roomAt } from '../../utils/rooms'
 
 const SIDE_LABELS = { front: 'קדמי', back: 'אחורי', left: 'שמאל', right: 'ימין' } as const
@@ -132,12 +134,35 @@ export function SelectionPanel() {
                 onChange={(e) =>
                   st().upsertRoomStyle(
                     resolvedRoom.styleIndex,
-                    { x: resolvedRoom.room.rep.x, y: resolvedRoom.room.rep.y, material: resolvedRoom.material, name: e.target.value },
+                    { x: resolvedRoom.room.rep.x, y: resolvedRoom.room.rep.y, material: resolvedRoom.material, name: e.target.value, kind: resolvedRoom.kind },
                     `roomname:${resolvedRoom.room.id}`,
                   )
                 }
                 data-testid="room-name"
               />
+            </div>
+            <div>
+              <label className="label">סוג החדר</label>
+              <select
+                className="field !w-36 !py-1"
+                value={resolvedRoom.kind ?? 'room'}
+                data-testid="room-kind"
+                onChange={(e) => {
+                  const kind = e.target.value as RoomKind
+                  // changing the type also suggests that type's name and floor (both stay editable)
+                  st().upsertRoomStyle(
+                    resolvedRoom.styleIndex,
+                    { x: resolvedRoom.room.rep.x, y: resolvedRoom.room.rep.y, kind, material: ROOM_KINDS[kind].material, name: ROOM_KINDS[kind].label },
+                    `roomkind:${resolvedRoom.room.id}`,
+                  )
+                }}
+              >
+                {ROOM_KIND_ORDER.map((k) => (
+                  <option key={k} value={k}>
+                    {ROOM_KINDS[k].label}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="pb-1 text-sm font-semibold text-slate-700">{resolvedRoom.areaM2.toFixed(1)} מ"ר</div>
             <button
@@ -171,6 +196,7 @@ export function SelectionPanel() {
                         y: resolvedRoom.room.rep.y,
                         material: m.id,
                         name: roomStyles[resolvedRoom.styleIndex]?.name,
+                        kind: resolvedRoom.kind,
                       },
                       `roommat:${resolvedRoom.room.id}`,
                     )

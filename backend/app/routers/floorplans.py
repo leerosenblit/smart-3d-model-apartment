@@ -9,7 +9,8 @@ from pathlib import PurePosixPath
 from fastapi import APIRouter, HTTPException, UploadFile
 
 from ..config import get_settings
-from ..schemas import DetectedWallRead, DetectWallsRequest, DetectWallsResult, FloorplanUploadResult
+from ..schemas import DetectedWallRead, DetectWallsRequest, DetectWallsResult, FloorplanUploadResult, RoomHintRead
+from ..services import ocr_labels
 from ..services.wall_detect import detect_walls_auto
 
 router = APIRouter(prefix="/api/floorplans", tags=["floorplans"])
@@ -102,11 +103,25 @@ def detect_floorplan_walls(body: DetectWallsRequest):
     path = get_settings().floorplans_dir / name
     if not body.url.startswith("/static/floorplans/") or not name or not path.is_file():
         raise HTTPException(404, "Floorplan not found")
-    try:
-        with Image.open(path) as im:
-            walls, ppc, estimated = detect_walls_auto(im, body.pixels_per_cm)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(422, f"Could not analyse floorplan: {exc}") from exc
+    from concurrent.futures import ThreadPoolExecutor
+
+    # OCR (room names printed on the plan; needs Tesseract + Hebrew data, else empty) runs in parallel
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        ocr_future = pool.submit(ocr_labels.room_hints, path)
+        try:
+            with Image.open(path) as im:
+                walls, ppc, estimated = detect_walls_auto(im, body.pixels_per_cm)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(422, f"Could not analyse floorplan: {exc}") from exc
+        raw_hints = ocr_future.result()
+    hints: list[RoomHintRead] = []
+    if ppc and walls:
+        hints = [
+            RoomHintRead(kinds=h.kinds, text=h.text, x_cm=h.x_px / ppc, y_cm=h.y_px / ppc) for h in raw_hints
+        ]
     return DetectWallsResult(
-        walls=[DetectedWallRead(**w.__dict__) for w in walls], pixels_per_cm=ppc, scale_estimated=estimated
+        walls=[DetectedWallRead(**w.__dict__) for w in walls],
+        room_hints=hints,
+        pixels_per_cm=ppc,
+        scale_estimated=estimated,
     )

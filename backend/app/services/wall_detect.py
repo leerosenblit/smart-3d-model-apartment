@@ -24,8 +24,9 @@ MIN_THICKNESS_CM = 8.0
 MAX_THICKNESS_CM = 70.0
 MIN_LENGTH_CM = 45.0
 MIN_GAP_CM = 45.0
-MAX_GAP_CM = 260.0
+MAX_GAP_CM = 360.0  # wide glass/sliding doors to terraces are often 2.4-3.5 m
 DOOR_MAX_CM = 110.0
+WIDE_DOOR_CM = 200.0
 
 
 @dataclass
@@ -43,6 +44,7 @@ class _Rect:
     cc: float  # centre-line coordinate on the perpendicular axis
     t: float  # thickness
     openings: list[DetectedOpening] = field(default_factory=list)
+    thin: bool = False  # found as hollow/single thin lines (not a solid filled wall)
 
 
 @dataclass
@@ -53,6 +55,7 @@ class DetectedWall:
     y2: float
     thicknessCm: float
     openings: list[dict] = field(default_factory=list)  # {kind, offsetCm, widthCm, heightCm, sillCm}
+    thin: bool = False
 
 
 # ----------------------------------------------------------------------------- morphology
@@ -190,7 +193,7 @@ def _bridge_gaps(rects: list[_Rect]) -> list[_Rect]:
             return rects
         gap, i, j = best
         a, b = rects[i], rects[j]
-        kind = "door" if gap <= DOOR_MAX_CM else "window"
+        kind = "door" if (gap <= DOOR_MAX_CM or gap > WIDE_DOOR_CM) else "window"  # very wide gaps are patio doors
         merged = _Rect(
             a.orient,
             a.a0,
@@ -198,6 +201,7 @@ def _bridge_gaps(rects: list[_Rect]) -> list[_Rect]:
             (a.cc * (a.a1 - a.a0) + b.cc * (b.a1 - b.a0)) / ((a.a1 - a.a0) + (b.a1 - b.a0)),
             max(a.t, b.t),
             a.openings + b.openings + [DetectedOpening(kind, (a.a1 + b.a0) / 2, gap)],
+            thin=a.thin and b.thin,
         )
         rects = [r for k, r in enumerate(rects) if k not in (i, j)] + [merged]
 
@@ -237,7 +241,87 @@ def _dedupe(rects: list[_Rect]) -> list[_Rect]:
     return keep
 
 
-def detect_walls(img: Image.Image, pixels_per_cm: float) -> list[DetectedWall]:
+def _thin_line_runs(ink: np.ndarray, min_len: int) -> list[tuple[int, int, int]]:
+    """Long continuous horizontal ink runs: (row, x0, x1). A 3 px closing bridges small breaks."""
+    closed = ~_open(~ink, 1, 3)
+    runs: list[tuple[int, int, int]] = []
+    for y in range(closed.shape[0]):
+        row = closed[y]
+        if not row.any():
+            continue
+        d = np.diff(np.concatenate(([0], row.astype(np.int8), [0])))
+        for a, b in zip(np.flatnonzero(d == 1).tolist(), np.flatnonzero(d == -1).tolist()):
+            if b - a >= min_len:
+                runs.append((y, a, b))
+    return runs
+
+
+def _group_lines(runs: list[tuple[int, int, int]]) -> list[tuple[float, int, int]]:
+    """Merge vertically adjacent runs that overlap in x into lines: (centre row, x0, x1)."""
+    lines: list[list] = []  # [y_sum, count, x0, x1, last_row]
+    for y, a, b in sorted(runs):
+        for ln in lines:
+            if y - ln[4] <= 1 and min(b, ln[3]) - max(a, ln[2]) > 0.6 * (b - a):
+                ln[0] += y
+                ln[1] += 1
+                ln[2], ln[3], ln[4] = min(ln[2], a), max(ln[3], b), y
+                break
+        else:
+            lines.append([y, 1, a, b, y])
+    return [(ln[0] / ln[1], ln[2], ln[3]) for ln in lines if ln[1] <= 4]  # thin lines only
+
+
+def _thin_partitions(img_mask: np.ndarray, ppc: float, limit: tuple[float, float, float, float]) -> list[_Rect]:
+    """Partitions drawn as two parallel thin lines (hollow walls) -> wall rectangles in cm."""
+    min_len = max(20, int(round(90 * ppc)))
+    gap_lo, gap_hi = 6.0 * ppc, 24.0 * ppc
+    out: list[_Rect] = []
+    for orient, arr in (("h", img_mask), ("v", img_mask.T)):
+        lines = _group_lines(_thin_line_runs(arr, min_len))
+        used: set[int] = set()
+        for i, (y1, a1, b1) in enumerate(lines):
+            for j in range(i + 1, len(lines)):
+                if i in used or j in used:
+                    continue
+                y2, a2, b2 = lines[j]
+                sep = abs(y2 - y1)
+                if not (gap_lo <= sep <= gap_hi):
+                    continue
+                x0, x1 = max(a1, a2), min(b1, b2)
+                if x1 - x0 < 0.8 * min(b1 - a1, b2 - a2) or x1 - x0 < min_len:
+                    continue
+                used.update((i, j))
+                cc = (y1 + y2) / 2 / ppc
+                r = _Rect(orient, x0 / ppc, x1 / ppc, cc, sep / ppc + 1.5, thin=True)
+                lx0, ly0, lx1, ly1 = limit
+                cx = (r.a0 + r.a1) / 2
+                px, py = (cx, cc) if orient == "h" else (cc, cx)
+                if lx0 <= px <= lx1 and ly0 <= py <= ly1:
+                    out.append(r)
+    return out
+
+
+def _single_lines_between_walls(ink: np.ndarray, ppc: float, rects: list[_Rect]) -> list[_Rect]:
+    """Long single thin lines whose BOTH ends touch perpendicular walls are almost certainly walls
+    (furniture outlines and dimension lines do not connect two walls)."""
+    min_len = max(30, int(round(100 * ppc)))
+    out: list[_Rect] = []
+    for orient, arr in (("h", ink), ("v", ink.T)):
+        for yc, a, b in _group_lines(_thin_line_runs(arr, min_len)):
+            cc, a0, a1 = yc / ppc, a / ppc, b / ppc
+
+            def touches(pos: float) -> bool:
+                return any(
+                    r.orient != orient and abs(pos - r.cc) <= r.t / 2 + 20 and r.a0 - 15 <= cc <= r.a1 + 15
+                    for r in rects
+                )
+
+            if touches(a0) and touches(a1):
+                out.append(_Rect(orient, a0, a1, cc, 10.0, thin=True))
+    return out
+
+
+def detect_walls(img: Image.Image, pixels_per_cm: float, include_thin: bool = True) -> list[DetectedWall]:
     ppc = float(pixels_per_cm)
     if ppc <= 0:
         raise ValueError("pixels_per_cm must be positive")
@@ -251,6 +335,29 @@ def detect_walls(img: Image.Image, pixels_per_cm: float) -> list[DetectedWall]:
     rects = _rects_from_mask(hmask, "h", ppc, t_min, t_max, l_min) + _rects_from_mask(
         vmask, "v", ppc, t_min, t_max, l_min
     )
+    # hollow partitions (two thin parallel lines) inside the area spanned by the solid walls
+    if rects and include_thin:
+        lim = (
+            min(min(r.a0, r.cc) if r.orient == "h" else r.cc for r in rects) - 10,
+            min(r.cc if r.orient == "h" else r.a0 for r in rects) - 10,
+            max(max(r.a1, r.cc) if r.orient == "h" else r.cc for r in rects) + 10,
+            max(r.cc if r.orient == "h" else r.a1 for r in rects) + 10,
+        )
+        rgb = np.asarray(img.convert("RGB")).astype(np.int32)
+        lum = (rgb[..., 0] * 299 + rgb[..., 1] * 587 + rgb[..., 2] * 114) // 1000
+        ink_thin = ((rgb.max(axis=2) - rgb.min(axis=2)) > 38) | (lum < 150)
+        for t in _thin_partitions(ink_thin, ppc, lim):
+            if not any(
+                r.orient == t.orient and abs(r.cc - t.cc) <= max(r.t, t.t) and min(r.a1, t.a1) - max(r.a0, t.a0) > 0.5 * (t.a1 - t.a0)
+                for r in rects
+            ):
+                rects.append(t)
+        for t in _single_lines_between_walls(ink_thin, ppc, rects):
+            if not any(
+                r.orient == t.orient and abs(r.cc - t.cc) <= max(r.t, t.t) and min(r.a1, t.a1) - max(r.a0, t.a0) > 0.5 * (t.a1 - t.a0)
+                for r in rects
+            ):
+                rects.append(t)
     rects = _bridge_gaps(rects)
     _snap_junctions(rects)
     rects = _dedupe(rects)
@@ -261,17 +368,17 @@ def detect_walls(img: Image.Image, pixels_per_cm: float) -> list[DetectedWall]:
         a0, a1, cc = round(r.a0), round(r.a1), round(r.cc)
         ops = []
         for o in r.openings:
-            width = float(min(max(round(o.width), 60), 260))
+            width = float(min(max(round(o.width), 60), MAX_GAP_CM))
             half = width / 2
             offset = min(max(o.center - a0, half), max(half, (a1 - a0) - half))
             if o.kind == "door":
-                ops.append({"kind": "door", "offsetCm": round(offset), "widthCm": min(width, 120.0), "heightCm": 210.0, "sillCm": 0.0})
+                ops.append({"kind": "door", "offsetCm": round(offset), "widthCm": width, "heightCm": 210.0, "sillCm": 0.0})
             else:
                 ops.append({"kind": "window", "offsetCm": round(offset), "widthCm": width, "heightCm": 120.0, "sillCm": 90.0})
         if r.orient == "h":
-            walls.append(DetectedWall(a0, cc, a1, cc, t, ops))
+            walls.append(DetectedWall(a0, cc, a1, cc, t, ops, r.thin))
         else:
-            walls.append(DetectedWall(cc, a0, cc, a1, t, ops))
+            walls.append(DetectedWall(cc, a0, cc, a1, t, ops, r.thin))
     walls.sort(key=lambda w: (round(w.y1), round(w.x1)))
     return walls
 
@@ -301,9 +408,11 @@ def detect_walls_auto(
         ppc_work = float(pixels_per_cm) * f
         estimated = False
     else:
-        probe = detect_walls(work, 1.0)  # thresholds in raw pixels
-        if not probe:
+        probe_all = detect_walls(work, 1.0, include_thin=False)  # raw-pixel thresholds; solid walls only (fast)
+        if not probe_all:
             return [], None, True
+        # thin hollow partitions are always ~10 cm, so they must not drag the thickness median down
+        probe = [p for p in probe_all if not p.thin] or probe_all
         weights = [max(1.0, abs(p.x2 - p.x1) + abs(p.y2 - p.y1)) for p in probe]
         order = sorted(range(len(probe)), key=lambda i: probe[i].thicknessCm)
         half, acc = sum(weights) / 2, 0.0

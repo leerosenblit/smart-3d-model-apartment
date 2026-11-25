@@ -7,6 +7,7 @@ import type {
   ProductInput,
   ProjectRead,
   ProjectSummary,
+  RoomHint,
   SceneState,
 } from '../types'
 
@@ -53,6 +54,7 @@ export interface ProductFilters {
   max_depth_cm?: number
   max_price_ils?: number
   sort_by?: string
+  limit?: number
 }
 
 export const api = {
@@ -104,6 +106,6 @@ export const api = {
   detectWalls: (
     url: string,
     pixelsPerCm: number | null,
-  ): Promise<{ walls: DetectedWall[]; pixels_per_cm: number | null; scale_estimated: boolean }> =>
+  ): Promise<{ walls: DetectedWall[]; room_hints: RoomHint[]; pixels_per_cm: number | null; scale_estimated: boolean }> =>
     request('/api/floorplans/detect-walls', json('POST', { url, pixels_per_cm: pixelsPerCm })),
 }

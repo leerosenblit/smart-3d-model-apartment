@@ -84,6 +84,8 @@ export interface AppState {
   orthoSnap: boolean
   gridSnap: boolean
   showFloors: boolean
+  /** furnish rooms from the catalog automatically after walls are detected */
+  autoFurnish: boolean
   toasts: Toast[]
 
   // catalog
@@ -117,8 +119,13 @@ export interface AppState {
   setOrthoSnap: (v: boolean) => void
   setGridSnap: (v: boolean) => void
   setShowFloors: (v: boolean) => void
+  setAutoFurnish: (v: boolean) => void
+  /** Add many items as ONE undo step (optionally replacing all existing furniture). */
+  addPlacedItems: (items: PlacedItem[], replace?: boolean) => void
   /** Replace the style at `index` (or append when null). */
   upsertRoomStyle: (index: number | null, style: RoomStyle, key?: string) => void
+  /** Replace all room styles (no extra undo entry: used right after wall detection). */
+  setRoomStyles: (styles: RoomStyle[]) => void
   /** Give every room the same floor (clears per-room names' positions only for rooms listed). */
   setAllRoomMaterials: (points: { x: number; y: number; name?: string }[], material: RoomStyle['material']) => void
 
@@ -188,6 +195,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   orthoSnap: true,
   gridSnap: true,
   showFloors: true,
+  autoFurnish: true,
   toasts: [],
 
   products: [],
@@ -218,6 +226,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   setOrthoSnap: (v) => set({ orthoSnap: v }),
   setGridSnap: (v) => set({ gridSnap: v }),
   setShowFloors: (v) => set({ showFloors: v }),
+  setRoomStyles: (styles) => set({ roomStyles: styles }),
+  setAutoFurnish: (v) => set({ autoFurnish: v }),
+  addPlacedItems: (items, replace = false) => {
+    get().pushHistory()
+    set((s) => ({ placedItems: replace ? items : [...s.placedItems, ...items], selected: null }))
+  },
   upsertRoomStyle: (index, style, key) => {
     get().pushHistory(key ?? 'roomstyle')
     set((s) => ({

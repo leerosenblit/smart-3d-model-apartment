@@ -100,12 +100,25 @@ export interface PlacedItem {
 
 export type FloorMaterialId = 'oak' | 'walnut' | 'tile_white' | 'tile_beige' | 'concrete' | 'carpet'
 
-/** User choice for the room that contains plan point (x, y). Rooms themselves are derived from the walls. */
+export type RoomKind =
+  | 'bedroom' | 'master' | 'kids' | 'office' | 'living' | 'dining' | 'kitchen'
+  | 'bathroom' | 'toilet' | 'laundry' | 'hallway' | 'balcony' | 'closet' | 'storage' | 'room'
+
+/** Room-name hint read from the plan image (OCR), in plan centimeters. */
+export interface RoomHint {
+  kinds: string[]
+  text: string
+  x_cm: number
+  y_cm: number
+}
+
+/** User/auto choice for the room that contains plan point (x, y). Rooms themselves are derived from the walls. */
 export interface RoomStyle {
   x: number
   y: number
   material: FloorMaterialId
   name?: string
+  kind?: RoomKind
 }
 
 export interface SceneState {

@@ -157,7 +157,15 @@ class DetectedWallRead(BaseModel):
     openings: list[DetectedOpeningRead] = Field(default_factory=list)
 
 
+class RoomHintRead(BaseModel):
+    kinds: list[str]
+    text: str
+    x_cm: float
+    y_cm: float
+
+
 class DetectWallsResult(BaseModel):
     walls: list[DetectedWallRead]
+    room_hints: list[RoomHintRead] = Field(default_factory=list)
     pixels_per_cm: Optional[float] = None
     scale_estimated: bool = False

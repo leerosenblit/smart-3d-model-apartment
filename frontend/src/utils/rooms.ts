@@ -22,12 +22,14 @@ export interface RoomLayout {
   /** room id per cell, -1 = not a room (wall / outside / sliver) */
   labels: Int16Array
   rooms: RoomInfo[]
+  /** debugging aid: raster of wall cells / outside cells */
+  debug?: { solid: Uint8Array; outside: Uint8Array }
 }
 
 const MIN_ROOM_CM2 = 8000 // 0.8 m²: ignore slivers between walls
 const MAX_CELLS = 1_200_000
 const CLOSE_RADIUS_CM = 20 // closes wall gaps up to ~40 cm so slightly-open rooms still count as rooms
-const ENVELOPE_RADIUS_CM = 100 // for deciding what is OUTSIDE the building: seals missed-wall gaps up to ~2 m
+const ENVELOPE_RADIUS_CM = 150 // for deciding what is OUTSIDE the building: seals missed-wall gaps up to ~3 m
 const DOOR_SEAL_CM = 130 // free wall ends facing another wall within this distance get a virtual closing segment
 
 export function boxPass(src: Uint8Array, w: number, h: number, r: number, horizontal: boolean, dilate: boolean): Uint8Array {
@@ -263,7 +265,7 @@ export function detectRooms(walls: Wall[]): RoomLayout | null {
       rep: { x: Math.round(ox + ((best % w) + 0.5) * cell), y: Math.round(oy + (((best / w) | 0) + 0.5) * cell) },
     })
   }
-  return rooms.length ? { cell, minX: ox, minY: oy, w, h, labels, rooms } : null
+  return rooms.length ? { cell, minX: ox, minY: oy, w, h, labels, rooms, debug: { solid, outside } } : null
 }
 
 /** Room id at a plan point, or -1. */
