@@ -18,7 +18,7 @@ from sqlmodel import Session
 
 from ..config import get_settings
 from ..models import Product, utcnow
-from .procedural import Color, Palette, build_model
+from .procedural import Color, Palette, build_model, resolve_palette
 
 log = logging.getLogger("roomcraft.model3d")
 
@@ -68,6 +68,8 @@ def _dist(a: Color, b: Color) -> float:
 def dominant_palette(img: Image.Image) -> Optional[Palette]:
     """Dominant + accent colour of a product photo, ignoring the white/grey studio background."""
     im = img.convert("RGB")
+    w0, h0 = im.size
+    im = im.crop((int(w0 * 0.15), int(h0 * 0.15), int(w0 * 0.85), int(h0 * 0.85)))  # the product is usually centred
     im.thumbnail((64, 64))
     px = list(im.getdata())
     if not px:
@@ -323,6 +325,7 @@ async def _run_generation(product_id: int) -> None:
                 info.palette = await asyncio.wait_for(palette_for(info), timeout=PALETTE_TIMEOUT_S)
             except asyncio.TimeoutError:
                 log.info("palette lookup timed out for product %s; using default colours", product_id)
+            info.palette = resolve_palette(info.title, info.palette)  # colours named in the title beat the photo
         await provider.generate(info, out_path)
         if not out_path.exists() or out_path.stat().st_size == 0:
             raise GenerationError("Provider did not produce a model file")

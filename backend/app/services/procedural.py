@@ -52,6 +52,68 @@ GLASS: Color = (188, 214, 224)
 WHITE: Color = (244, 244, 246)
 
 
+# ----------------------------------------------------------------------------- colours from the title
+
+_COLOR_WORDS: dict[str, Color] = {
+    # hebrew
+    "כחול": (58, 92, 150), "כחולה": (58, 92, 150), "תכלת": (130, 185, 220), "אפור": (138, 140, 146), "אפורה": (138, 140, 146),
+    "שחור": (42, 43, 48), "שחורה": (42, 43, 48), "לבן": (240, 240, 242), "לבנה": (240, 240, 242),
+    "בז": (205, 186, 156), "שמנת": (234, 224, 200), "קרם": (234, 224, 200), "שנהב": (240, 232, 214),
+    "חום": (116, 80, 58), "חומה": (116, 80, 58), "קפה": (104, 74, 56),
+    "ירוק": (74, 120, 84), "ירוקה": (74, 120, 84), "זית": (112, 120, 72), "מרווה": (150, 168, 140),
+    "אדום": (172, 52, 52), "אדומה": (172, 52, 52), "בורדו": (112, 32, 48), "ורוד": (224, 162, 178), "ורודה": (224, 162, 178),
+    "סגול": (112, 74, 142), "צהוב": (232, 196, 72), "צהובה": (232, 196, 72), "חרדל": (204, 152, 52), "כתום": (222, 124, 52),
+    "טורקיז": (60, 160, 160), "זהב": (200, 170, 92), "כסף": (192, 194, 200), "נירוסטה": (196, 200, 206),
+    "אלון": (204, 170, 128), "אגוז": (102, 70, 50), "טבעי": (205, 175, 135), "אבן": (170, 166, 158), "בטון": (150, 150, 148),
+    "אפרסק": (240, 190, 150), "טרקוטה": (196, 110, 80), "נחושת": (184, 115, 80),
+    # english
+    "blue": (58, 92, 150), "navy": (40, 60, 105), "grey": (138, 140, 146), "gray": (138, 140, 146), "anthracite": (70, 74, 80),
+    "black": (42, 43, 48), "white": (240, 240, 242), "beige": (205, 186, 156), "cream": (234, 224, 200), "brown": (116, 80, 58),
+    "green": (74, 120, 84), "red": (172, 52, 52), "pink": (224, 162, 178), "yellow": (232, 196, 72), "orange": (222, 124, 52),
+    "oak": (204, 170, 128), "walnut": (102, 70, 50), "birch": (222, 200, 160), "turquoise": (60, 160, 160),
+}
+_DARK_WORDS = {"כהה", "כהים", "כהה", "dark"}
+_LIGHT_WORDS = {"בהיר", "בהירה", "בהירים", "light", "pale"}
+_PREFIXES = "בהולכמש"
+
+
+def _lum(c: Color) -> float:
+    return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+
+
+def colors_from_title(title: str) -> list[Color]:
+    """Colours named in a product title ("בגוון כחול", "אפור כהה", "Kilanda בז' בהיר", "white/oak"), in order."""
+    tokens = re.findall(r"[\u05d0-\u05ea]+|[A-Za-z]+", title or "")
+    out: list[Color] = []
+    for i, raw in enumerate(tokens):
+        word = raw.lower()
+        key = word if word in _COLOR_WORDS else (word[1:] if len(word) > 3 and word[0] in _PREFIXES and word[1:] in _COLOR_WORDS else None)
+        if key is None:
+            continue
+        c = _COLOR_WORDS[key]
+        nxt = tokens[i + 1].lower() if i + 1 < len(tokens) else ""
+        if nxt in _DARK_WORDS:
+            c = shade(c, 0.62)
+        elif nxt in _LIGHT_WORDS:
+            c = mix(c, (255, 255, 255), 0.42)
+        if not out or _dist(out[-1], c) > 30:
+            out.append(c)
+        if len(out) == 2:
+            break
+    return out
+
+
+def resolve_palette(title: str, photo: Optional[Palette]) -> Optional[Palette]:
+    """Title colours win (they are explicit and reliable); the photo, which is often a room scene, is the fallback."""
+    cols = colors_from_title(title)
+    if not cols:
+        return photo
+    main = cols[0]
+    # second named colour -> accent; otherwise a near-main accent so legs fall back to a wood/metal tone
+    accent = cols[1] if len(cols) > 1 else shade(main, 0.9)
+    return Palette(main, accent, pale=_lum(main) > 225)
+
+
 # ----------------------------------------------------------------------------- mesh primitives
 
 def _paint(m: trimesh.Trimesh, color: Color) -> trimesh.Trimesh:

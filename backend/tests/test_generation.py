@@ -321,3 +321,34 @@ def test_slow_photo_host_does_not_block_model_generation(client, monkeypatch):
     client.post(f"/api/products/{pid}/generate-3d")
     # falls back to default colours and still finishes
     assert client.get(f"/api/products/{pid}/3d-status").json()["model_status"] == "ready"
+
+
+# ---- colours named in the product title beat the (often room-scene) photo
+
+def test_title_colours_hebrew_modifiers_and_pairs():
+    from app.services.procedural import colors_from_title
+
+    blue = colors_from_title('ספה דגם JOHNSON רוחב 200 ס"מ בגוון כחול')[0]
+    assert blue[2] > blue[0] + 40 and blue[2] > blue[1] + 20  # clearly blue
+    grey = colors_from_title("ספה בגוון אפור")[0]
+    dark = colors_from_title("ספה בגוון אפור כהה")[0]
+    light = colors_from_title("ספה בגוון אפור בהיר")[0]
+    assert sum(dark) < sum(grey) < sum(light)
+    assert len(colors_from_title("מזנון לבן/אלון")) == 2  # white body + oak accent
+    assert colors_from_title("שולחן דגם נורית") == []  # no colour word
+    assert colors_from_title("ספה בכחול")  # Hebrew prefix ב + color
+    assert colors_from_title("Sofa in navy blue")
+
+
+def test_title_colour_overrides_photo_palette_but_photo_is_the_fallback():
+    from app.services.model_3d import build_category_mesh
+    from app.services.procedural import Palette, resolve_palette
+
+    beige_room_photo = Palette((205, 186, 156), (150, 120, 90))  # walls + floor of a lifestyle photo
+    pal = resolve_palette("ספה דגם JOHNSON בגוון כחול", beige_room_photo)
+    assert pal.main[2] > pal.main[0]  # blue, not beige
+    assert resolve_palette("ספה דגם נורית", beige_room_photo) is beige_room_photo
+    scene = build_category_mesh("sofa", 200, 98, 78, pal, "ספה בגוון כחול", 3)
+    blueish = [c for c in _vertex_colors(scene) if c[2] > c[0] + 20]
+    beigeish = [c for c in _vertex_colors(scene) if c[0] > c[2] + 40 and c[0] > 150]
+    assert blueish and not beigeish  # the sofa really is blue and has no beige parts
