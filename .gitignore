@@ -1,0 +1,30 @@
+.env
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+backend/.venv/
+backend/roomcraft.db
+backend/storage/floorplans/*
+backend/storage/models/*
+!backend/storage/floorplans/.gitkeep
+!backend/storage/models/.gitkeep
+
+# runtime / local-only
+backend/storage/thumbs/*
+backend/storage/crawl_state.json
+*.log
+.claude/
+.pytest_cache/
+frontend/dist/
+
+# crawl artifacts, databases and backups
+*.db
+*.db-journal
+*.bak
+*.bak-*
+backend/*.bak*
+backend/storage/logs/
+backend/storage/crawl_cache/
+backend/storage/thumbs/

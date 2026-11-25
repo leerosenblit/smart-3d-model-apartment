@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "RoomCraft Clipper",
+  "version": "1.0.0",
+  "description": "Send products from any store page (even ones blocked for automatic scraping) to your local RoomCraft 3D catalog.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1:8000/*", "http://localhost:8000/*"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "action": { "default_popup": "popup.html", "default_title": "Send to RoomCraft" },
+  "background": { "service_worker": "background.js" }
+}
