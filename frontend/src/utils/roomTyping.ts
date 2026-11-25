@@ -107,6 +107,10 @@ export function classifyRooms(layout: RoomLayout, hints: RoomHint[], walls: Wall
     if (id >= 0) h.kinds.forEach((k) => hinted[id].add(k))
   }
   stats.forEach((s, i) => {
+    if (layout.rooms[i].outdoor) {
+      kinds[i] = 'balcony' // open-air space behind a door/window
+      return
+    }
     const hs = hinted[i]
     if (!hs.size) return
     if (hs.has('master') && hs.has('bathroom')) kinds[i] = 'bathroom'

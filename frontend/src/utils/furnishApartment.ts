@@ -16,7 +16,7 @@ const NEEDED: Category[] = ['bed', 'wardrobe', 'storage', 'desk', 'sofa', 'tv_un
  */
 export async function furnishApartment(opts: { replace?: boolean; quiet?: boolean } = {}): Promise<number> {
   const st = useAppStore.getState()
-  const floor = computeFloor(st.walls, st.roomStyles)
+  const floor = computeFloor(st.walls, st.roomStyles, st.openings)
   if (!floor) {
     if (!opts.quiet) st.toast('לא זוהו חדרים לריהוט — ודאו שהקירות סגורים', 'info')
     return 0
@@ -52,6 +52,6 @@ export async function furnishApartment(opts: { replace?: boolean; quiet?: boolea
   const items = placementsToItems(placements)
   useAppStore.getState().addPlacedItems(items, !!opts.replace)
   // lazy 3D: each distinct product is generated once (cached afterwards)
-  new Set(items.map((i) => i.productId)).forEach((id) => void ensureModel(id))
+  new Set(items.filter((i) => !i.fixture).map((i) => i.productId)).forEach((id) => void ensureModel(id))
   return items.length
 }

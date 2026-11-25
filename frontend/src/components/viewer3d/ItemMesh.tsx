@@ -8,6 +8,7 @@ import type { PlacedItem } from '../../types'
 import { CATEGORY_COLORS } from '../../utils/labels'
 import { normalizeGlbModel } from '../../utils/normalizeGlbModel'
 import { cmToM, deg2rad } from '../../utils/units'
+import { FixtureMesh } from './FixtureMesh'
 import { drag3d, rayToFloorCm, walkState } from './floor'
 
 const BRAND = '#2f7de1'
@@ -108,7 +109,9 @@ export function ItemMesh({ item }: { item: PlacedItem }) {
       onClick={(e) => e.stopPropagation()}
       userData={{ itemId: item.id }}
     >
-      {ready ? (
+      {item.fixture ? (
+        <FixtureMesh kind={item.fixture} widthCm={item.widthCm} depthCm={item.depthCm} heightCm={item.heightCm} />
+      ) : ready ? (
         <ModelBoundary fallback={<Placeholder item={item} status="failed" />}>
           <Suspense fallback={<Placeholder item={item} status="generating" />}>
             <ModelBody item={item} url={ms!.url!} />

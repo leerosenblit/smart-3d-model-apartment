@@ -23,7 +23,7 @@ export async function autoDetectWalls(ppc: number | null): Promise<boolean> {
     st.applyDetectedWalls(res.walls, true)
     // name + type every room (OCR labels from the plan first, size/shape heuristics otherwise)
     const now = useAppStore.getState()
-    const floor = computeFloor(now.walls, [])
+    const floor = computeFloor(now.walls, [], now.openings)
     if (floor) {
       const typed = classifyRooms(floor.layout, res.room_hints ?? [], now.walls, now.openings)
       now.setRoomStyles(stylesFromTyping(floor.layout, typed))

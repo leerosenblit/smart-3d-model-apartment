@@ -7,5 +7,6 @@ import type { FloorResult } from '../utils/floorTexture'
 export function useFloor(): FloorResult | null {
   const walls = useAppStore((s) => s.walls)
   const styles = useAppStore((s) => s.roomStyles)
-  return useMemo(() => computeFloor(walls, styles), [walls, styles])
+  const openings = useAppStore((s) => s.openings)
+  return useMemo(() => computeFloor(walls, styles, openings), [walls, styles, openings])
 }

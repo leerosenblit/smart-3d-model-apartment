@@ -87,7 +87,7 @@ export function useModelOrchestrator() {
   const items = useAppStore((s) => s.placedItems)
   const modelStates = useAppStore((s) => s.modelStates)
   useEffect(() => {
-    const ids = new Set(items.map((i) => i.productId))
+    const ids = new Set(items.filter((i) => !i.fixture).map((i) => i.productId))
     ids.forEach((id) => {
       if (!modelStates[id]) void ensureModel(id)
     })

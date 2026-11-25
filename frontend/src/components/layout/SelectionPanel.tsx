@@ -83,7 +83,11 @@ export function SelectionPanel() {
           <div className="flex flex-wrap items-baseline gap-x-3">
             <span className="text-sm font-bold text-slate-800">{item.title}</span>
             <span className="ltr text-xs text-slate-500">{formatDims(item.widthCm, item.depthCm, item.heightCm)}</span>
-            <span className="text-xs font-semibold text-brand-700">{formatIls(item.priceIls)}</span>
+            {item.fixture ? (
+              <span className="text-xs font-semibold text-slate-500">תצוגה בלבד · לא למכירה</span>
+            ) : (
+              <span className="text-xs font-semibold text-brand-700">{formatIls(item.priceIls)}</span>
+            )}
           </div>
           <div className="flex flex-wrap items-end gap-2">
             <button className="btn" onClick={() => st().rotateItem90(item.id)} data-testid="rotate90">

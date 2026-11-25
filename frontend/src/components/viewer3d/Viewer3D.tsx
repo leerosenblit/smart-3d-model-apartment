@@ -8,6 +8,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { isProductDrag, resolveDroppedProduct } from '../../utils/dropProduct'
 import { formatCm } from '../../utils/format'
 import {
+  wallCorners,
   buildWalkColliders,
   computeClearances,
   findWalkStart,
@@ -17,7 +18,8 @@ import {
   snapItemToWalls,
 } from '../../utils/geometry'
 import type { Point } from '../../types'
-import { roomAt, roomKey } from '../../utils/rooms'
+import { balconyRailings, roomAt, roomKey } from '../../utils/rooms'
+import { computeFloor } from '../../utils/floorTexture'
 import { cmToM } from '../../utils/units'
 import { ItemMesh } from './ItemMesh'
 import { WallMesh } from './WallMesh'
@@ -285,6 +287,36 @@ function Ceiling() {
   )
 }
 
+/** Glass railing + handrail along the open edges of balconies. */
+function BalconyRailings() {
+  const floor = useFloor()
+  const segs = useMemo(() => (floor ? balconyRailings(floor.layout) : []), [floor])
+  return (
+    <>
+      {segs.map((s, i) => {
+        const len = Math.hypot(s.x2 - s.x1, s.y2 - s.y1)
+        const ang = Math.atan2(s.y2 - s.y1, s.x2 - s.x1)
+        return (
+          <group key={i} position={[cmToM((s.x1 + s.x2) / 2), 0, cmToM((s.y1 + s.y2) / 2)]} rotation={[0, -ang, 0]}>
+            <mesh position={[0, 0.5, 0]}>
+              <boxGeometry args={[cmToM(len), 0.95, 0.015]} />
+              <meshPhysicalMaterial color="#cfe9f2" transparent opacity={0.24} roughness={0.05} depthWrite={false} />
+            </mesh>
+            <mesh position={[0, 1.0, 0]} castShadow>
+              <boxGeometry args={[cmToM(len), 0.04, 0.05]} />
+              <meshStandardMaterial color="#5b6470" metalness={0.6} roughness={0.35} />
+            </mesh>
+            <mesh position={[0, 0.03, 0]} castShadow>
+              <boxGeometry args={[cmToM(len), 0.06, 0.05]} />
+              <meshStandardMaterial color="#5b6470" metalness={0.6} roughness={0.35} />
+            </mesh>
+          </group>
+        )
+      })}
+    </>
+  )
+}
+
 function SceneContents() {
   const walls = useAppStore((s) => s.walls)
   const openings = useAppStore((s) => s.openings)
@@ -304,6 +336,7 @@ function SceneContents() {
       {items.map((it) => (
         <ItemMesh key={it.id} item={it} />
       ))}
+      <BalconyRailings />
       <ClearanceOverlay />
     </>
   )
@@ -319,9 +352,19 @@ export function Viewer3D() {
   const walls = useAppStore((s) => s.walls)
   const openings = useAppStore((s) => s.openings)
   const items = useAppStore((s) => s.placedItems)
+  const floorForWalk = useFloor()
+  const railingPolys = useMemo(
+    () =>
+      floorForWalk
+        ? balconyRailings(floorForWalk.layout).map((s) =>
+            wallCorners({ id: 'rail', x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, thicknessCm: 8 }),
+          )
+        : [],
+    [floorForWalk],
+  )
   const colliders = useMemo(
-    () => buildWalkColliders({ walls, openings, placedItems: items }),
-    [walls, openings, items],
+    () => [...buildWalkColliders({ walls, openings, placedItems: items }), ...railingPolys],
+    [walls, openings, items, railingPolys],
   )
 
   useEffect(() => {
@@ -335,7 +378,9 @@ export function Viewer3D() {
     const st = useAppStore.getState()
     const b = sceneBounds(st)
     const center = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 }
-    const colls = buildWalkColliders(st)
+    const fl = computeFloor(st.walls, st.roomStyles, st.openings)
+    const rails = fl ? balconyRailings(fl.layout).map((s) => wallCorners({ id: 'rail', x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, thicknessCm: 8 })) : []
+    const colls = [...buildWalkColliders(st), ...rails]
     const wallsOnly = buildWalkColliders({ walls: st.walls, openings: st.openings, placedItems: [] })
     const start = resolveCircleCollisions(at ?? findWalkStart(wallsOnly, b, center), 30, colls)
     setSelected(null)

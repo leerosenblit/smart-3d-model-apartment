@@ -24,7 +24,7 @@ import { viewRegistry } from '../../utils/viewRegistry'
 import { useFloor } from '../../hooks/useFloor'
 import { placeProduct } from '../../hooks/useModelGeneration'
 import { roomHighlightUrl } from '../../utils/floorTexture'
-import { parseRoomKey, roomAt, roomKey } from '../../utils/rooms'
+import { balconyRailings, parseRoomKey, roomAt, roomKey } from '../../utils/rooms'
 import { autoDetectWalls } from '../../utils/autoDetect'
 import { Toolbar2D } from './Toolbar2D'
 
@@ -47,11 +47,40 @@ const isTyping = (t: EventTarget | null): boolean =>
   t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')
 
 /** Simple top-down symbol for a furniture footprint, drawn in the item's local frame (back = top, front = bottom). */
-function ItemGlyph({ category, w, d }: { category: PlacedItem['category']; w: number; d: number }) {
+function ItemGlyph({ category, fixture, w, d }: { category: PlacedItem['category']; fixture?: PlacedItem['fixture']; w: number; d: number }) {
   const hw = w / 2
   const hd = d / 2
   const line = { stroke: '#0f172a', strokeOpacity: 0.45, strokeWidth: 1, vectorEffect: 'non-scaling-stroke' as const, fill: 'none' }
   const soft = { fill: '#fff', fillOpacity: 0.55, stroke: '#0f172a', strokeOpacity: 0.35, strokeWidth: 1, vectorEffect: 'non-scaling-stroke' as const }
+  if (fixture) {
+    switch (fixture) {
+      case 'toilet':
+        return (
+          <g pointerEvents="none">
+            <rect x={-hw * 0.8} y={-hd * 0.95} width={w * 0.8} height={d * 0.3} rx={3} {...soft} />
+            <ellipse cx={0} cy={hd * 0.18} rx={hw * 0.78} ry={hd * 0.58} {...soft} />
+          </g>
+        )
+      case 'sink':
+        return (
+          <g pointerEvents="none">
+            <ellipse cx={0} cy={hd * 0.1} rx={hw * 0.62} ry={hd * 0.5} {...soft} />
+            <circle cx={0} cy={-hd * 0.55} r={Math.min(3, d * 0.06)} fill="#0f172a" fillOpacity={0.5} />
+          </g>
+        )
+      case 'bathtub':
+        return <rect x={-hw * 0.9} y={-hd * 0.82} width={w * 0.9} height={d * 0.82} rx={Math.min(w, d) * 0.3} {...soft} />
+      case 'shower':
+        return (
+          <g pointerEvents="none">
+            <path d={`M ${-hw * 0.9} ${-hd * 0.9} L ${hw * 0.9} ${hd * 0.9}`} {...line} />
+            <circle cx={0} cy={0} r={Math.min(w, d) * 0.1} {...soft} />
+          </g>
+        )
+      case 'washer':
+        return <circle cx={0} cy={0} r={Math.min(w, d) * 0.3} {...soft} />
+    }
+  }
   switch (category) {
     case 'bed': {
       const pw = Math.min(w * 0.4, 70)
@@ -478,6 +507,7 @@ export function Editor2D() {
   // ---- derived
   const k = view.k
   const sel = selected
+  const railings = useMemo(() => (floor ? balconyRailings(floor.layout) : []), [floor])
   const floorUrl = useMemo(() => (floor ? floor.canvas.toDataURL('image/png') : null), [floor])
   const selRoomId = useMemo(() => {
     if (!floor || sel?.type !== 'room') return -1
@@ -711,6 +741,12 @@ export function Editor2D() {
               )
             })}
 
+            {/* balcony railings */}
+            {showFloors &&
+              railings.map((s, i) => (
+                <line key={`rail-${i}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke="#64748b" strokeWidth={2.5} strokeDasharray="7 4" vectorEffect="non-scaling-stroke" pointerEvents="none" />
+              ))}
+
             {/* room names + areas */}
             {floor && showFloors &&
               floor.rooms.map((r) => {
@@ -760,7 +796,7 @@ export function Editor2D() {
                   />
                   {/* front edge marker (local +z) */}
                   <line x1={-hw} y1={hd} x2={hw} y2={hd} stroke={isSel ? BRAND : '#1e293b'} strokeWidth={3} vectorEffect="non-scaling-stroke" opacity={0.7} />
-                  <ItemGlyph category={it.category} w={it.widthCm} d={it.depthCm} />
+                  <ItemGlyph category={it.category} fixture={it.fixture} w={it.widthCm} d={it.depthCm} />
                   {(isSel || k >= 1.1) && it.widthCm * k >= 80 && it.depthCm * k >= 28 && (
                   <g transform={`rotate(${-it.rotationDeg})`} pointerEvents="none">
                     <text textAnchor="middle" y={-fs * 0.2} fontSize={fs} fontWeight={700} fill="#0f172a" stroke="#fff" strokeWidth={fs * 0.18} paintOrder="stroke">

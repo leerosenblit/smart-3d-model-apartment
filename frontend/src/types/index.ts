@@ -79,9 +79,14 @@ export interface Opening {
   sillCm: number
 }
 
+/** Built-in bathroom/utility fixtures: 3D preview only (no catalog product, no price, not in the shopping list). */
+export type FixtureKind = 'toilet' | 'sink' | 'bathtub' | 'shower' | 'washer'
+
 export interface PlacedItem {
   id: string
   productId: number
+  /** set for preview-only fixtures (productId is 0 and priceIls 0 for these) */
+  fixture?: FixtureKind
   xCm: number
   /** plan-y (maps to world z) */
   zCm: number

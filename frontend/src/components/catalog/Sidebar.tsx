@@ -10,7 +10,7 @@ type Tab = 'catalog' | 'import' | 'budget'
 export function Sidebar() {
   const [tab, setTab] = useState<Tab>('catalog')
   const reload = useCatalogLoader()
-  const itemCount = useAppStore((s) => s.placedItems.length)
+  const itemCount = useAppStore((s) => s.placedItems.filter((i) => !i.fixture).length)
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'catalog', label: 'קטלוג מוצרים' },

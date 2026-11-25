@@ -66,6 +66,8 @@ Uploading a plan builds the whole apartment by default:
 2. **Rooms** are derived from the walls (see below), then **typed and named in Hebrew** (`frontend/src/utils/roomTyping.ts`): room names printed on the plan are read with **Tesseract OCR when it is installed with Hebrew data** (optional; e.g. "ח.שינה", "ח.רחצה", "פ.אוכל"), otherwise size/shape/door heuristics decide (bedroom, master, living room, bathroom, hallway, laundry, ...). Each type gets a default floor (parquet for bedrooms/living, tiles for bathrooms/kitchen/balcony).
 3. **Auto-furnish** (`autoFurnish.ts`, toggle "ריהוט אוטומטי", button "🛋 רהט"): picks suitable real products from the catalog and places them — bed with the headboard on a wall plus bedside tables, wardrobe in a corner, desk, TV unit with the sofa facing it and a coffee table, a dining table with chairs in the roomiest spot — never blocking doors or overlapping. Placing products triggers lazy 3D generation (free with the mock provider; with a paid provider each distinct product is one generation).
 
+**Bathrooms and balconies.** Bathrooms/toilets/laundry get built-in **preview-only 3D fixtures** (bathtub or shower, toilet, vanity sink, washing machine): they are not catalog products, have no price and never appear in the budget or shopping list. A **balcony** is an open-air area walled on three sides behind a wide door or window of an indoor room: it gets a tile floor, a glass railing along the open edge (solid in walk mode, so you cannot step off), and a small table with chairs. Furniture placement checks the exact wall shapes, so nothing ends up inside a wall.
+
 Every result is editable (click a room to change its type, name or floor; drag furniture) and undoable. The detector targets axis-aligned walls: diagonal/curved walls, hatched open balconies and hand sketches may need a manual fix in 2D. Research systems use trained segmentation models (CubiCasa5K-style) or fine-tuned vision-language models for the hard cases; they need heavy dependencies/weights, so they are not bundled.
 
 **Walk mode** (`🚶 הליכה בדירה`, or double-click the floor): first-person camera at 160 cm eye height. `W A S D`/arrows move, mouse looks (click to capture, `Esc` releases), `Shift` runs, `Q`/`E` turn. Walls and furniture block you; doors are passable; windows are solid.
@@ -87,7 +89,7 @@ frontend/src/{api,components/{editor2d,viewer3d,catalog,layout},store,utils,hook
 
 ```bash
 cd backend && python -m pytest -q      # CRUD, filters, seed, scraper, lazy 3D (mock + mocked Tripo/Meshy), uploads
-cd frontend && npx tsc --noEmit && npm run build
+cd frontend && npx tsc --noEmit && npm test && npm run build
 ```
 
 Seed product URLs/images are illustrative placeholders, not live store links. The Tripo/Meshy/LLM integrations are covered by mocked-transport tests only (no live API calls were made).

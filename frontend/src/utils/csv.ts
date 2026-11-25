@@ -17,6 +17,7 @@ export interface BomLine {
 export function buildBom(items: PlacedItem[]): BomLine[] {
   const map = new Map<number, BomLine>()
   for (const it of items) {
+    if (it.fixture) continue // preview-only fixtures are not for sale
     const line = map.get(it.productId)
     if (line) {
       line.qty += 1

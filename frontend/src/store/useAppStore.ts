@@ -484,4 +484,5 @@ export const useAppStore = create<AppState>((set, get) => ({
 }))
 
 export const selectScene = (s: AppState): SceneState => sceneOf(s)
-export const selectBudgetTotal = (s: AppState): number => s.placedItems.reduce((sum, i) => sum + i.priceIls, 0)
+export const selectBudgetTotal = (s: AppState): number =>
+  s.placedItems.reduce((sum, i) => sum + (i.fixture ? 0 : i.priceIls), 0)

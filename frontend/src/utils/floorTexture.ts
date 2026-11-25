@@ -1,6 +1,6 @@
 // Builds ONE canvas texture covering the whole plan, with each detected room painted in its
 // floor material. Shared by the 2D editor (as an <image>) and the 3D viewer (as a map).
-import type { FloorMaterialId, RoomKind, RoomStyle, Wall } from '../types'
+import type { FloorMaterialId, Opening, RoomKind, RoomStyle, Wall } from '../types'
 import { autoMaterial, materialInfo, patternTile } from './floorMaterials'
 import { boxPass, detectRooms, styleIndexForRoom } from './rooms'
 import type { RoomInfo, RoomLayout } from './rooms'
@@ -28,16 +28,20 @@ export interface FloorResult {
 const MAX_TEXTURE = 2048
 let cache: { key: string; value: FloorResult | null } | null = null
 
-export function computeFloor(walls: Wall[], styles: RoomStyle[]): FloorResult | null {
-  const key = JSON.stringify([walls.map((w) => [w.x1, w.y1, w.x2, w.y2, w.thicknessCm]), styles])
+export function computeFloor(walls: Wall[], styles: RoomStyle[], openings: Opening[] = []): FloorResult | null {
+  const key = JSON.stringify([
+    walls.map((w) => [w.id, w.x1, w.y1, w.x2, w.y2, w.thicknessCm]),
+    openings.map((o) => [o.wallId, o.kind, o.offsetCm, o.widthCm]),
+    styles,
+  ])
   if (cache?.key === key) return cache.value
-  const value = build(walls, styles)
+  const value = build(walls, styles, openings)
   cache = { key, value }
   return value
 }
 
-function build(walls: Wall[], styles: RoomStyle[]): FloorResult | null {
-  const layout = detectRooms(walls)
+function build(walls: Wall[], styles: RoomStyle[], openings: Opening[]): FloorResult | null {
+  const layout = detectRooms(walls, openings)
   if (!layout) return null
   const { w, h, cell } = layout
 

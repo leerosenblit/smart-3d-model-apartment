@@ -1,6 +1,6 @@
 // Room detection: rooms are DERIVED from the walls (never stored), by rasterising the wall
 // footprints, flood-filling the outside, and labelling what remains. Plan space, centimeters.
-import type { Point, RoomStyle, Wall } from '../types'
+import type { Opening, Point, RoomStyle, Wall } from '../types'
 import { pointInPolygon, rayPolygon, wallCorners, wallDir, wallLength } from './geometry'
 
 export interface RoomInfo {
@@ -11,6 +11,8 @@ export interface RoomInfo {
   cy: number
   /** a point guaranteed to be inside the room (cell closest to the centroid) */
   rep: Point
+  /** open-air space (balcony / terrace) found behind a door or window of an indoor room */
+  outdoor?: boolean
 }
 
 export interface RoomLayout {
@@ -22,6 +24,8 @@ export interface RoomLayout {
   /** room id per cell, -1 = not a room (wall / outside / sliver) */
   labels: Int16Array
   rooms: RoomInfo[]
+  /** raster of wall cells (true = wall) */
+  solid: Uint8Array
   /** debugging aid: raster of wall cells / outside cells */
   debug?: { solid: Uint8Array; outside: Uint8Array }
 }
@@ -93,7 +97,7 @@ function fillPolygon(mask: Uint8Array, w: number, h: number, poly: Point[]): voi
   }
 }
 
-export function detectRooms(walls: Wall[]): RoomLayout | null {
+export function detectRooms(walls: Wall[], openings: Opening[] = []): RoomLayout | null {
   if (walls.length < 3) return null
   let minX = Infinity
   let minY = Infinity
@@ -265,7 +269,117 @@ export function detectRooms(walls: Wall[]): RoomLayout | null {
       rep: { x: Math.round(ox + ((best % w) + 0.5) * cell), y: Math.round(oy + (((best / w) | 0) + 0.5) * cell) },
     })
   }
-  return rooms.length ? { cell, minX: ox, minY: oy, w, h, labels, rooms, debug: { solid, outside } } : null
+  // 5. balconies: open-air space behind a wide door/window of an indoor room, walled on EXACTLY three sides
+  //    (open on one). Independent of the heavy envelope closing, so small balconies are found too; an area
+  //    that was swallowed as an indoor room is replaced.
+  const reach = new Uint8Array(w * h) // free space connected to the grid border (light wall closing only)
+  {
+    const q = [0]
+    reach[0] = 1
+    while (q.length) {
+      const i = q.pop()!
+      const x = i % w
+      const y = (i / w) | 0
+      for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, y > 0 ? i - w : -1, y < h - 1 ? i + w : -1]) {
+        if (j >= 0 && !solid[j] && !reach[j]) {
+          reach[j] = 1
+          q.push(j)
+        }
+      }
+    }
+  }
+  const cellOf = (x: number, y: number): number => {
+    const gx = Math.floor((x - ox) / cell)
+    const gy = Math.floor((y - oy) / cell)
+    return gx < 0 || gy < 0 || gx >= w || gy >= h ? -1 : gy * w + gx
+  }
+  const popcount = (v: number): number => (v & 1) + ((v >> 1) & 1) + ((v >> 2) & 1) + ((v >> 3) & 1)
+  const removed = new Set<number>()
+  const cellsOfRoom = rooms.map(() => 0)
+  for (let i = 0; i < labels.length; i++) if (labels[i] >= 0) cellsOfRoom[labels[i]]++
+  for (const o of openings) {
+    if (o.widthCm < 80) continue
+    const wall = walls.find((x) => x.id === o.wallId)
+    if (!wall) continue
+    const d = wallDir(wall)
+    const c = { x: wall.x1 + d.x * o.offsetCm, y: wall.y1 + d.y * o.offsetCm }
+    const reachCm = wall.thicknessCm / 2 + 2 * cell + 6
+    for (const side of [1, -1]) {
+      const inside = cellOf(c.x - d.y * reachCm * side, c.y + d.x * reachCm * side)
+      const start = cellOf(c.x + d.y * reachCm * side, c.y - d.x * reachCm * side)
+      if (inside < 0 || start < 0) continue
+      const inLabel = labels[inside]
+      if (inLabel < 0 || removed.has(inLabel) || rooms[inLabel].outdoor) continue
+      if (solid[start] || !reach[start] || popcount(bits[start]) !== 3 || labels[start] === inLabel) continue
+      if (labels[start] >= 0 && rooms[labels[start]].outdoor) continue // already a balcony
+      const cells: number[] = []
+      const seen = new Set<number>([start])
+      const queue = [start]
+      while (queue.length) {
+        const i = queue.pop()!
+        cells.push(i)
+        const x = i % w
+        const y = (i / w) | 0
+        for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, y > 0 ? i - w : -1, y < h - 1 ? i + w : -1]) {
+          if (j < 0 || seen.has(j) || solid[j] || !reach[j] || popcount(bits[j]) !== 3) continue
+          if (labels[j] === inLabel) continue
+          const jx = ox + ((j % w) + 0.5) * cell
+          const jy = oy + (((j / w) | 0) + 0.5) * cell
+          if (Math.abs(jx - c.x) > 600 || Math.abs(jy - c.y) > 600) continue // a balcony is never huge
+          seen.add(j)
+          queue.push(j)
+        }
+      }
+      const area = cells.length * cell * cell
+      if (area < 25000 || area > 500000) continue // 2.5 .. 50 m2
+      // rooms that were swallowed inside this area must lie ENTIRELY inside it, otherwise this is not a balcony
+      const touched = new Map<number, number>()
+      for (const i of cells) if (labels[i] >= 0) touched.set(labels[i], (touched.get(labels[i]) ?? 0) + 1)
+      let ok = true
+      for (const [rid, count] of touched) if (count !== cellsOfRoom[rid]) ok = false
+      if (!ok || touched.has(inLabel)) continue
+      touched.forEach((_n, rid) => removed.add(rid))
+      let sx = 0
+      let sy = 0
+      for (const i of cells) {
+        sx += i % w
+        sy += (i / w) | 0
+      }
+      const mx = sx / cells.length
+      const my = sy / cells.length
+      let best = cells[0]
+      let bestD = Infinity
+      for (const i of cells) {
+        const dd = ((i % w) - mx) ** 2 + (((i / w) | 0) - my) ** 2
+        if (dd < bestD) {
+          bestD = dd
+          best = i
+        }
+      }
+      const id = rooms.length
+      cellsOfRoom.push(cells.length)
+      for (const i of cells) labels[i] = id
+      rooms.push({
+        id,
+        areaCm2: area,
+        cx: ox + (mx + 0.5) * cell,
+        cy: oy + (my + 0.5) * cell,
+        rep: { x: Math.round(ox + ((best % w) + 0.5) * cell), y: Math.round(oy + (((best / w) | 0) + 0.5) * cell) },
+        outdoor: true,
+      })
+    }
+  }
+  // drop swallowed rooms and renumber so ids stay contiguous (room id == index)
+  if (removed.size) {
+    const remap = new Map<number, number>()
+    const kept = rooms.filter((r) => !removed.has(r.id))
+    kept.forEach((r, i) => remap.set(r.id, i))
+    for (let i = 0; i < labels.length; i++) if (labels[i] >= 0) labels[i] = remap.get(labels[i]) ?? -1
+    kept.forEach((r, i) => (r.id = i))
+    rooms.length = 0
+    rooms.push(...kept)
+  }
+  return rooms.length ? { cell, minX: ox, minY: oy, w, h, labels, rooms, solid, debug: { solid, outside } } : null
 }
 
 /** Room id at a plan point, or -1. */
@@ -286,4 +400,57 @@ export const roomKey = (room: RoomInfo): string => `${room.rep.x}:${room.rep.y}`
 export const parseRoomKey = (id: string): Point => {
   const [x, y] = id.split(':').map(Number)
   return { x, y }
+}
+
+export interface Segment {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+/**
+ * Railing segments (cm) along the open edges of balconies: cell sides of an outdoor room that touch neither a
+ * wall nor another room. Axis-aligned runs are merged into long segments.
+ */
+export function balconyRailings(layout: RoomLayout): Segment[] {
+  const { w, h, cell, labels, solid } = layout
+  const out: Segment[] = []
+  for (const room of layout.rooms) {
+    if (!room.outdoor) continue
+    const horiz = new Map<number, number[]>() // y cell-line -> x cells
+    const vert = new Map<number, number[]>() // x cell-line -> y cells
+    const open = (gx: number, gy: number): boolean => {
+      if (gx < 0 || gy < 0 || gx >= w || gy >= h) return true
+      const i = gy * w + gx
+      return labels[i] !== room.id && !solid[i]
+    }
+    for (let gy = 0; gy < h; gy++)
+      for (let gx = 0; gx < w; gx++) {
+        if (labels[gy * w + gx] !== room.id) continue
+        if (open(gx, gy - 1)) (horiz.get(gy) ?? horiz.set(gy, []).get(gy)!).push(gx)
+        if (open(gx, gy + 1)) (horiz.get(gy + 1) ?? horiz.set(gy + 1, []).get(gy + 1)!).push(gx)
+        if (open(gx - 1, gy)) (vert.get(gx) ?? vert.set(gx, []).get(gx)!).push(gy)
+        if (open(gx + 1, gy)) (vert.get(gx + 1) ?? vert.set(gx + 1, []).get(gx + 1)!).push(gy)
+      }
+    const runs = (cells: number[]): [number, number][] => {
+      const sorted = [...new Set(cells)].sort((a, b) => a - b)
+      const r: [number, number][] = []
+      for (const c of sorted) {
+        const last = r[r.length - 1]
+        if (last && c === last[1] + 1) last[1] = c
+        else r.push([c, c])
+      }
+      return r
+    }
+    for (const [line, cells] of horiz)
+      for (const [a, b] of runs(cells))
+        if ((b - a + 1) * cell >= 40)
+          out.push({ x1: layout.minX + a * cell, y1: layout.minY + line * cell, x2: layout.minX + (b + 1) * cell, y2: layout.minY + line * cell })
+    for (const [line, cells] of vert)
+      for (const [a, b] of runs(cells))
+        if ((b - a + 1) * cell >= 40)
+          out.push({ x1: layout.minX + line * cell, y1: layout.minY + a * cell, x2: layout.minX + line * cell, y2: layout.minY + (b + 1) * cell })
+  }
+  return out
 }
