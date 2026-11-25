@@ -72,6 +72,16 @@ Every result is editable (click a room to change its type, name or floor; drag f
 
 **Walk mode** (`🚶 הליכה בדירה`, or double-click the floor): first-person camera at 160 cm eye height. `W A S D`/arrows move, mouse looks (click to capture, `Esc` releases), `Shift` runs, `Q`/`E` turn. Walls and furniture block you; doors are passable; windows are solid.
 
+## Rooms and floors
+
+Rooms are **derived from the walls** (`frontend/src/utils/rooms.ts`), never stored: wall footprints are rasterised, the outside is flood-filled using a heavily gap-closed copy (so a few missed wall segments do not make rooms leak outside), cells enclosed on all four sides are rescued as indoors, and each enclosed region becomes a room with an area. An open-air area walled on three sides behind a wide door or window is a **balcony** (tile floor, glass railing that is solid in walk mode, outdoor furniture). Each room gets a procedural floor (parquet oak/walnut, tiles, concrete, carpet; `floorMaterials.ts`) painted into one canvas texture shared by the 2D editor and the 3D viewer. Click a room to change its type, name or floor; choices are saved with the project (`roomStyles`). Walls get baseboards in 3D. Bathrooms and the laundry room get built-in **preview-only fixtures** (tub or shower, toilet, vanity sink, washing machine): not products, no price, never in the budget or shopping list. Furniture placement checks the exact wall shapes, so nothing ends up inside a wall.
+
+## 3D models
+
+Models are generated **lazily** the first time a product is placed (never pre-generated), then cached in `backend/storage/models/`. The default **built-in modeller** (`backend/app/services/procedural.py`, no API key, free) builds a recognisable model per product: soft rounded cushions and pillows, L-shaped sectional sofas, beds with headboards and duvets, tapered legs, door panels with handles, open bookcases with books, chests of drawers, real appliance details (fridge, washer porthole, oven window), lamps with shades, rugs, mirrors and plants. Style variants (legs, arms, handles, headboard type, ...) are chosen per product and colours are read from the product photo, so products do not all look alike. Review every type side by side with `python -m scripts.model_gallery` and open `http://localhost:5173/?gallery` (dev server only).
+
+For models that match each photo exactly, set `IMAGE_TO_3D_PROVIDER=tripo3d|meshy` and the matching key in `.env` (paid per model, only for products you actually place). Use **🔄 מודל חדש** on a selected item, or **🔄 רענן מודלים** in the 2D toolbar, to regenerate models cached by an earlier provider or an older version of the modeller.
+
 ## Architecture
 
 - **Units**: everything persisted/in state is **centimeters**; meters exist only inside the R3F layer (`value / 100`). Plan `y` maps to world `z`.

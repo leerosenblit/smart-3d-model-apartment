@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useFloor } from '../../hooks/useFloor'
+import { regenerateModel } from '../../hooks/useModelGeneration'
 import { useAppStore } from '../../store/useAppStore'
 import { computeClearances, wallLength } from '../../utils/geometry'
 import { formatCm, formatDims, formatIls } from '../../utils/format'
@@ -107,6 +108,11 @@ export function SelectionPanel() {
             </div>
             <Num label='X (ס"מ)' value={item.xCm} onChange={(v) => st().updateItem(item.id, { xCm: v }, `x:${item.id}`)} />
             <Num label='Z (ס"מ)' value={item.zCm} onChange={(v) => st().updateItem(item.id, { zCm: v }, `z:${item.id}`)} />
+            {!item.fixture && (
+              <button className="btn" onClick={() => void regenerateModel(item.productId)} title="צור מחדש את מודל התלת-ממד של המוצר" data-testid="regen-model">
+                🔄 מודל חדש
+              </button>
+            )}
             <button className="btn" onClick={() => st().duplicateItem(item.id)} data-testid="duplicate">
               ⧉ שכפל
             </button>

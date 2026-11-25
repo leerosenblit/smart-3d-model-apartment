@@ -31,6 +31,11 @@ async function poll(productId: number) {
     await new Promise((r) => setTimeout(r, POLL_MS))
     try {
       const info = await api.status3d(productId)
+      if (info.model_status === 'none') {
+        // the server lost the job (restart / orphaned task): start it again
+        applyStatus(productId, await api.generate3d(productId))
+        continue
+      }
       applyStatus(productId, info)
       if (info.model_status === 'ready' || info.model_status === 'failed') return
     } catch {
@@ -79,6 +84,22 @@ export async function ensureModel(productId: number, opts: { retryFailed?: boole
     })
   } finally {
     inflight.delete(productId)
+  }
+}
+
+/** Throw away the cached model of one product and generate it again (e.g. after a better provider was configured). */
+export async function regenerateModel(productId: number): Promise<void> {
+  useAppStore.getState().setModelState(productId, { status: 'generating', url: null, error: null })
+  try {
+    const info = await api.generate3d(productId, true)
+    applyStatus(productId, info)
+    if (info.model_status === 'generating') await poll(productId)
+  } catch (e) {
+    useAppStore.getState().setModelState(productId, {
+      status: 'failed',
+      url: null,
+      error: e instanceof Error ? e.message : 'error',
+    })
   }
 }
 

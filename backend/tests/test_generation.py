@@ -36,7 +36,8 @@ def test_lazy_generation_flow(client):
 
     status = client.get(f"/api/products/{pid}/3d-status").json()
     assert status["model_status"] == "ready"
-    assert status["model_3d_url"] == f"/static/models/{pid}.glb"
+    # the URL carries a ?v= cache-buster so a regenerated model is never served stale
+    assert status["model_3d_url"].startswith(f"/static/models/{pid}.glb?v=")
     assert status["model_error"] is None
 
     # file exists on disk, is served, and is a valid GLB
@@ -211,3 +212,112 @@ def test_real_providers_reject_non_http_image(tmp_path):
         asyncio.run(Tripo3DProvider("k").generate(info, tmp_path / "x.glb"))
     with pytest.raises(GenerationError):
         asyncio.run(MeshyProvider("k").generate(info, tmp_path / "x.glb"))
+
+
+# ---- product-photo colours and richer shapes
+
+def _photo(color, size=(120, 120)):
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", size, "white")  # white studio background
+    ImageDraw.Draw(img).rectangle([20, 40, 100, 100], fill=color)
+    return img
+
+
+def test_palette_reads_product_colour_and_ignores_white_background():
+    from app.services.model_3d import dominant_palette
+
+    pal = dominant_palette(_photo((60, 130, 70)))  # green sofa on white
+    assert not pal.pale
+    assert pal.main[1] > pal.main[0] + 30 and pal.main[1] > pal.main[2] + 30  # clearly green
+    white = dominant_palette(_photo((250, 250, 250)))
+    assert white.pale  # a white product on a white background -> "pale" palette
+
+
+def _vertex_colors(scene):
+    import numpy as np
+
+    cols = set()
+    for g in scene.geometry.values():
+        cols |= {tuple(c[:3]) for c in np.unique(g.visual.vertex_colors, axis=0)}
+    return cols
+
+
+def test_mock_model_uses_photo_colour_and_differs_per_product():
+    from app.services.model_3d import Palette, build_category_mesh
+
+    green = Palette((60, 130, 70), (90, 60, 40))
+    red = Palette((170, 50, 50), (30, 30, 30))
+    a = build_category_mesh("sofa", 220, 90, 80, green, "ספה")
+    b = build_category_mesh("sofa", 220, 90, 80, red, "ספה")
+    assert _vertex_colors(a) != _vertex_colors(b)
+    assert any(c[1] > c[0] and c[1] > c[2] for c in _vertex_colors(a))  # green present
+    # sectional sofas (title or deep footprint) get a different, L-shaped silhouette than plain ones
+    plain = build_category_mesh("sofa", 220, 90, 80, green, "ספה תלת מושבית")
+    corner = build_category_mesh("sofa", 300, 160, 80, green, "ספה פינתית")
+
+    def front_width(scene, z_min):  # x-extent of everything in front of z_min (metres)
+        import trimesh
+
+        v = trimesh.util.concatenate(scene.dump()).vertices
+        front = v[v[:, 2] > z_min]
+        return float(front[:, 0].max() - front[:, 0].min())
+
+    assert front_width(plain, 0.3) > 0.8 * 2.2  # a plain sofa is full width at the front
+    assert front_width(corner, 0.3) < 0.5 * 3.0  # only the chaise reaches the front -> L shape
+    # wardrobes show door seams proportional to their width
+    narrow = build_category_mesh("wardrobe", 60, 55, 200, green, "ארון")
+    wide = build_category_mesh("wardrobe", 250, 60, 220, green, "ארון הזזה")
+    assert len(wide.geometry) > len(narrow.geometry)
+
+
+def test_force_regenerates_a_ready_model_with_a_new_url(client):
+    pid = first_product(client, "armchair")["id"]
+    client.post(f"/api/products/{pid}/generate-3d")
+    first = client.get(f"/api/products/{pid}/3d-status").json()
+    assert first["model_status"] == "ready"
+    assert client.post(f"/api/products/{pid}/generate-3d").json()["model_status"] == "ready"  # idempotent
+    import time
+
+    time.sleep(1.1)  # the ?v= cache-buster is a unix timestamp
+    r = client.post(f"/api/products/{pid}/generate-3d", params={"force": "true"})
+    assert r.json()["model_status"] == "generating"
+    second = client.get(f"/api/products/{pid}/3d-status").json()
+    assert second["model_status"] == "ready" and second["model_3d_url"] != first["model_3d_url"]
+
+
+def test_orphaned_generating_status_expires_and_is_retried(client, engine):
+    from datetime import timedelta
+
+    from sqlmodel import Session
+
+    from app.models import Product, utcnow
+
+    pid = first_product(client, "lighting")["id"]
+    with Session(engine) as s:
+        p = s.get(Product, pid)
+        p.model_status = "generating"  # a task the server lost (restart / crash)
+        p.updated_at = utcnow() - timedelta(minutes=10)
+        s.add(p)
+        s.commit()
+    # the status endpoint reports 'none' so clients re-trigger generation ...
+    assert client.get(f"/api/products/{pid}/3d-status").json()["model_status"] == "none"
+    # ... and a fresh generate call works
+    assert client.post(f"/api/products/{pid}/generate-3d").json()["model_status"] == "generating"
+    assert client.get(f"/api/products/{pid}/3d-status").json()["model_status"] == "ready"
+
+
+def test_slow_photo_host_does_not_block_model_generation(client, monkeypatch):
+    import asyncio
+
+    from app.services import model_3d
+
+    async def never(_info):
+        await asyncio.sleep(3600)  # an image host that never answers
+
+    monkeypatch.setattr(model_3d, "palette_for", never)
+    monkeypatch.setattr(model_3d, "PALETTE_TIMEOUT_S", 0.05)
+    pid = first_product(client, "decor")["id"]
+    client.post(f"/api/products/{pid}/generate-3d")
+    # falls back to default colours and still finishes
+    assert client.get(f"/api/products/{pid}/3d-status").json()["model_status"] == "ready"

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import type { Tool } from '../../types'
 import { autoDetectWalls } from '../../utils/autoDetect'
+import { regenerateModel } from '../../hooks/useModelGeneration'
 import { furnishApartment } from '../../utils/furnishApartment'
 
 const TOOLS: { id: Tool; label: string; icon: string; hint: string }[] = [
@@ -126,6 +127,22 @@ export function Toolbar2D({ onFit }: { onFit: () => void }) {
         title="רהט את החדרים מהקטלוג"
       >
         🛋 רהט
+      </button>
+
+      <button
+        className="btn"
+        data-testid="refresh-models"
+        title="צור מחדש את מודלי התלת-ממד של כל המוצרים שבתוכנית (רק אלה שבשימוש)"
+        onClick={async () => {
+          const st = useAppStore.getState()
+          const ids = [...new Set(st.placedItems.filter((i) => !i.fixture).map((i) => i.productId))]
+          if (!ids.length) return
+          if (!window.confirm(`ליצור מחדש ${ids.length} מודלי תלת-ממד? (בספק בתשלום כמו Tripo/Meshy כל מודל עולה קרדיט)`)) return
+          await Promise.all(ids.map((id) => regenerateModel(id)))
+          st.toast('מודלי התלת-ממד עודכנו', 'success')
+        }}
+      >
+        🔄 רענן מודלים
       </button>
 
       <label className="flex items-center gap-1">

@@ -3,19 +3,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import httpx
 import numpy as np
 import trimesh
+from PIL import Image
 from sqlmodel import Session
 
 from ..config import get_settings
 from ..models import Product, utcnow
+from .procedural import Color, Palette, build_model
 
 log = logging.getLogger("roomcraft.model3d")
+
+PALETTE_TIMEOUT_S = 6.0  # max wait for the product photo before falling back to default colours
 
 
 @dataclass
@@ -29,6 +36,7 @@ class ProductInfo:
     width_cm: float
     depth_cm: float
     height_cm: float
+    palette: Optional[Palette] = None
 
     @classmethod
     def from_product(cls, p: Product) -> "ProductInfo":
@@ -49,101 +57,73 @@ class ImageTo3DProvider(ABC):
 
 # --------------------------------------------------------------------------- mock
 
-Color = tuple[int, int, int]
+def _shade(c: Color, f: float) -> Color:
+    return (max(0, min(255, int(c[0] * f))), max(0, min(255, int(c[1] * f))), max(0, min(255, int(c[2] * f))))
 
 
-def _box(extents, center, color: Color) -> trimesh.Trimesh:
-    m = trimesh.creation.box(extents=extents)
-    m.apply_translation(center)
-    m.visual = trimesh.visual.ColorVisuals(
-        mesh=m, vertex_colors=np.tile(np.array([*color, 255], dtype=np.uint8), (len(m.vertices), 1))
+def _dist(a: Color, b: Color) -> float:
+    return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+
+def dominant_palette(img: Image.Image) -> Optional[Palette]:
+    """Dominant + accent colour of a product photo, ignoring the white/grey studio background."""
+    im = img.convert("RGB")
+    im.thumbnail((64, 64))
+    px = list(im.getdata())
+    if not px:
+        return None
+    fg: list[Color] = []
+    for r, g, b in px:
+        mx, mn = max(r, g, b), min(r, g, b)
+        if mn > 228:  # white background
+            continue
+        if mx - mn < 14 and mx > 205:  # light-grey background / soft shadow
+            continue
+        fg.append((r, g, b))
+    if len(fg) < 0.06 * len(px):
+        return Palette(main=(236, 236, 238), accent=(150, 150, 156), pale=True)
+    buckets: dict[tuple[int, int, int], list[Color]] = {}
+    for c in fg:
+        buckets.setdefault((c[0] // 40, c[1] // 40, c[2] // 40), []).append(c)
+    ranked = sorted(buckets.values(), key=len, reverse=True)
+
+    def avg(v: list[Color]) -> Color:
+        return (sum(c[0] for c in v) // len(v), sum(c[1] for c in v) // len(v), sum(c[2] for c in v) // len(v))
+
+    main = avg(ranked[0])
+    accent = next(
+        (avg(v) for v in ranked[1:] if len(v) >= 0.05 * len(fg) and _dist(avg(v), main) > 70),
+        _shade(main, 0.55),
     )
-    return m
+    return Palette(main, accent)
 
 
-def build_category_mesh(category: str, w_cm: float, d_cm: float, h_cm: float) -> trimesh.Scene:
-    """Procedural, recognizable category-shaped model. X=width, Y=height (up), Z=depth.
+def build_category_mesh(
+    category: str,
+    w_cm: float,
+    d_cm: float,
+    h_cm: float,
+    palette: Optional[Palette] = None,
+    title: str = "",
+    seed: int = 0,
+) -> trimesh.Scene:
+    """Procedural model of a product (see procedural.py): coloured from the photo, styled per product."""
+    return build_model(category, w_cm, d_cm, h_cm, palette, title, seed)
 
-    Origin is bottom-center. Real dimensions are re-applied by the client's normalizeGlbModel.
-    """
-    w, d, h = w_cm / 100.0, d_cm / 100.0, h_cm / 100.0
-    parts: list[trimesh.Trimesh] = []
-    add = lambda ext, c, col: parts.append(_box(ext, c, col))  # noqa: E731
 
-    if category == "sofa":
-        fabric, dark = (96, 125, 139), (69, 90, 100)
-        base_h, arm_w = h * 0.45, w * 0.1
-        add((w, base_h, d), (0, base_h / 2, 0), fabric)
-        add((w - 2 * arm_w, h * 0.55, d * 0.22), (0, base_h + h * 0.275 - 0.0, -d * 0.39), dark)
-        for s in (-1, 1):
-            add((arm_w, h * 0.7, d), (s * (w / 2 - arm_w / 2), h * 0.35, 0), dark)
-    elif category == "armchair":
-        fabric, dark = (161, 136, 127), (121, 85, 72)
-        base_h, arm_w = h * 0.45, w * 0.16
-        add((w, base_h, d), (0, base_h / 2, 0), fabric)
-        add((w - 2 * arm_w, h * 0.55, d * 0.25), (0, base_h + h * 0.275, -d * 0.375), dark)
-        for s in (-1, 1):
-            add((arm_w, h * 0.65, d), (s * (w / 2 - arm_w / 2), h * 0.325, 0), dark)
-    elif category in ("coffee_table", "dining_table", "desk"):
-        wood, leg_c = (141, 110, 99), (93, 64, 55)
-        top_t, leg = max(h * 0.08, 0.03), min(w, d) * 0.07
-        add((w, top_t, d), (0, h - top_t / 2, 0), wood)
-        for sx in (-1, 1):
-            for sz in (-1, 1):
-                add((leg, h - top_t, leg), (sx * (w / 2 - leg), (h - top_t) / 2, sz * (d / 2 - leg)), leg_c)
-    elif category == "chair":
-        wood, seat_c = (121, 85, 72), (188, 170, 164)
-        seat_h, leg = h * 0.48, min(w, d) * 0.1
-        add((w, h * 0.06, d), (0, seat_h, 0), seat_c)
-        add((w, h - seat_h, h * 0.05), (0, seat_h + (h - seat_h) / 2, -d / 2 + 0.02), wood)
-        for sx in (-1, 1):
-            for sz in (-1, 1):
-                add((leg, seat_h, leg), (sx * (w / 2 - leg), seat_h / 2, sz * (d / 2 - leg)), wood)
-    elif category == "bed":
-        frame, mattress, pillow = (109, 76, 65), (236, 239, 241), (255, 255, 255)
-        add((w, h * 0.4, d), (0, h * 0.2, 0), frame)
-        add((w * 0.96, h * 0.3, d * 0.96), (0, h * 0.4 + h * 0.15, 0.0), mattress)
-        add((w, h * 0.9, d * 0.04), (0, h * 0.45, -d / 2 + d * 0.02), frame)
-        for s in (-1, 1):
-            add((w * 0.35, h * 0.1, d * 0.15), (s * w * 0.22, h * 0.75, -d * 0.35), pillow)
-    elif category == "tv_unit":
-        wood, screen = (161, 136, 127), (33, 33, 33)
-        cab_h = h * 0.4
-        add((w, cab_h, d), (0, cab_h / 2, 0), wood)
-        add((w * 0.7, h * 0.5, d * 0.08), (0, cab_h + h * 0.3, 0), screen)
-        add((w * 0.12, h * 0.1, d * 0.4), (0, cab_h + h * 0.05, 0), (66, 66, 66))
-    elif category == "wardrobe":
-        body, handle = (215, 204, 200), (120, 120, 120)
-        add((w, h, d), (0, h / 2, 0), body)
-        add((0.01, h * 0.8, 0.02), (0, h / 2, d / 2 + 0.005), (90, 90, 90))
-        for s in (-1, 1):
-            add((0.02, h * 0.12, 0.03), (s * w * 0.06, h * 0.5, d / 2 + 0.015), handle)
-    elif category == "storage":
-        body, line = (176, 150, 130), (90, 70, 55)
-        add((w, h, d), (0, h / 2, 0), body)
-        rows = 3 if h > 0.6 else 2
-        for i in range(1, rows):
-            add((w * 0.98, 0.01, 0.02), (0, h * i / rows, d / 2 + 0.005), line)
-        add((0.03, 0.02, 0.03), (0, h * 0.8, d / 2 + 0.015), (60, 60, 60))
-    elif category == "appliance":
-        body, trim = (236, 239, 241), (176, 190, 197)
-        add((w, h, d), (0, h / 2, 0), body)
-        add((w * 0.96, 0.01, 0.02), (0, h * 0.62, d / 2 + 0.005), trim)
-        add((0.03, h * 0.2, 0.03), (w * 0.38, h * 0.8, d / 2 + 0.015), trim)
-    elif category == "lighting":
-        stand, shade = (66, 66, 66), (255, 241, 118)
-        add((w * 0.45, 0.02, d * 0.45), (0, 0.01, 0), stand)
-        add((0.03, h * 0.75, 0.03), (0, h * 0.375, 0), stand)
-        add((w, h * 0.25, d), (0, h * 0.875, 0), shade)
-    elif category == "decor":
-        add((w, h, d), (0, h / 2, 0), (128, 203, 196))
-    else:
-        add((w, h, d), (0, h / 2, 0), (176, 190, 197))
+async def palette_for(info: ProductInfo) -> Optional[Palette]:
+    """Colours of the product photo (via the cached thumbnail); None when there is no usable remote image."""
+    try:
+        from . import thumbs
 
-    scene = trimesh.Scene()
-    for i, m in enumerate(parts):
-        scene.add_geometry(m, node_name=f"part_{i}", geom_name=f"part_{i}")
-    return scene
+        probe = Product(id=info.id, title=info.title, product_url="", image_url=info.image_url)
+        path = await thumbs.get_or_create_thumb(probe)
+        if not path:
+            return None
+        with Image.open(path) as im:
+            return dominant_palette(im)
+    except Exception:  # noqa: BLE001 - colours are a nicety, never a failure
+        return None
 
 
 class MockGlbProvider(ImageTo3DProvider):
@@ -151,8 +131,12 @@ class MockGlbProvider(ImageTo3DProvider):
 
     async def generate(self, product: ProductInfo, out_path: Path) -> None:
         await asyncio.sleep(get_settings().mock_generation_seconds)
-        scene = build_category_mesh(product.category, product.width_cm, product.depth_cm, product.height_cm)
-        data = scene.export(file_type="glb")
+        # CPU-bound mesh building + GLB export run in a worker thread so the API stays responsive
+        scene = await asyncio.to_thread(
+            build_category_mesh,
+            product.category, product.width_cm, product.depth_cm, product.height_cm, product.palette, product.title, product.id,
+        )
+        data = await asyncio.to_thread(scene.export, file_type="glb")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(data)
 
@@ -305,8 +289,22 @@ def model_path(product_id: int) -> Path:
     return get_settings().models_dir / f"{product_id}.glb"
 
 
+_semaphores: dict[int, asyncio.Semaphore] = {}
+
+
+def _generation_slots() -> asyncio.Semaphore:
+    """At most 4 generations at once per event loop (SQLite, CPU and provider rate limits)."""
+    loop_id = id(asyncio.get_running_loop())
+    return _semaphores.setdefault(loop_id, asyncio.Semaphore(4))
+
+
 async def run_generation(product_id: int) -> None:
     """Background task: generate + cache the GLB, then update the product row."""
+    async with _generation_slots():
+        await _run_generation(product_id)
+
+
+async def _run_generation(product_id: int) -> None:
     from ..db import get_engine
 
     engine = get_engine()
@@ -319,7 +317,13 @@ async def run_generation(product_id: int) -> None:
     out_path = model_path(product_id)
     error: str | None = None
     try:
-        await get_provider().generate(info, out_path)
+        provider = get_provider()
+        if isinstance(provider, MockGlbProvider):
+            try:  # colours from the product photo; a slow image host must never block the model
+                info.palette = await asyncio.wait_for(palette_for(info), timeout=PALETTE_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                log.info("palette lookup timed out for product %s; using default colours", product_id)
+        await provider.generate(info, out_path)
         if not out_path.exists() or out_path.stat().st_size == 0:
             raise GenerationError("Provider did not produce a model file")
     except Exception as exc:  # noqa: BLE001 - surface any provider failure as status
@@ -331,7 +335,8 @@ async def run_generation(product_id: int) -> None:
         if product is None:
             return
         if error is None:
-            product.model_3d_url = f"/static/models/{product_id}.glb"
+            # ?v= busts browser/GLTF caches when a model is regenerated (the static route ignores it)
+            product.model_3d_url = f"/static/models/{product_id}.glb?v={int(time.time())}"
             product.model_status = "ready"
             product.model_error = None
         else:

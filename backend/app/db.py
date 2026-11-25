@@ -15,7 +15,7 @@ def get_engine():
     if _engine is None:
         _engine = create_engine(
             get_settings().database_url,
-            connect_args={"check_same_thread": False},
+            connect_args={"check_same_thread": False, "timeout": 30},  # wait for locks instead of failing
         )
     return _engine
 

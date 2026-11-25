@@ -74,8 +74,8 @@ export const api = {
     request('/api/products/ingest-batch', json('POST', { urls })),
 
   // lazy 3D
-  generate3d: (id: number): Promise<ModelStatusInfo> =>
-    request(`/api/products/${id}/generate-3d`, { method: 'POST' }),
+  generate3d: (id: number, force = false): Promise<ModelStatusInfo> =>
+    request(`/api/products/${id}/generate-3d${force ? '?force=true' : ''}`, { method: 'POST' }),
   status3d: (id: number): Promise<ModelStatusInfo> => request(`/api/products/${id}/3d-status`),
 
   // projects
