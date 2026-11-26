@@ -29,12 +29,18 @@ class Settings(BaseSettings):
     storage_dir: str = str(BACKEND_DIR / "storage")
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    catalog_snapshot: str = str(BACKEND_DIR / "data" / "catalog.json.gz")  # empty string disables
+
     mock_generation_seconds: float = 2.0
     max_upload_mb: int = 15
 
     @property
     def storage_path(self) -> Path:
         return Path(self.storage_dir)
+
+    @property
+    def catalog_snapshot_path(self) -> Path:
+        return Path(self.catalog_snapshot)
 
     @property
     def floorplans_dir(self) -> Path:

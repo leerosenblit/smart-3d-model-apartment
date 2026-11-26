@@ -18,7 +18,7 @@ Requirements: Python 3.12, Node 20+.
 ```
 
 - App: <http://localhost:5173> · API docs: <http://localhost:8000/docs>
-- The catalog is auto-seeded (23 products) on first startup.
+- On first startup the catalog is loaded from the committed snapshot `backend/data/catalog.json.gz` (~9.7k real products; falls back to a 23-product demo seed if the file is missing). On Windows, `start.bat` does the whole setup and opens the app.
 
 Manual setup:
 
@@ -57,6 +57,10 @@ python -m scripts.recategorize                      # split old 'wardrobe' rows 
 ```
 
 It reads IKEA Israel (sitemaps + JSON-LD), ACE (sitemap + page text) and HomeCenter / Shilav / small Shopify stores (`/products.json`), honours robots.txt, stays at 3–4 requests per host with delays, and keeps only rows with a real photo, a price and sane cm dimensions (accessories, covers and parts are filtered out; colour variants are capped). Photos are served resized and cached through `GET /api/products/{id}/image`. Stores that block automated access can be added with the **browser extension** in `extension/` (see its README): it sends the page you are looking at to `POST /api/products/clip`.
+
+### Sharing the project (catalog snapshot)
+
+The SQLite database and photo cache are not in git, but the catalog is: `python -m scripts.export_catalog` writes every product (title, price, cm dimensions, photo URL; no 3D models) to `backend/data/catalog.json.gz`. Commit it, and anyone who clones the repo gets the full catalog on first start. Product photos are fetched and cached from the stores on first view (`python -m scripts.warm_thumbs` pre-caches them); 3D models are generated lazily as usual. Saved projects are not part of the snapshot.
 
 ## Auto-build from a floorplan, and walk-through
 

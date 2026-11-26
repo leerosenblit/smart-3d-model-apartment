@@ -13,6 +13,7 @@ from .config import get_settings
 from .db import get_engine, init_db
 from .models import Product
 from .routers import clip, floorplans, generation, products, projects
+from .services.catalog_snapshot import import_catalog
 from .services.seed_data import seed_products
 
 log = logging.getLogger("roomcraft")
@@ -32,7 +33,11 @@ async def lifespan(app: FastAPI):
             session.add(p)
         if stuck:
             session.commit()
-        n = seed_products(session)  # no-op unless the table is empty
+        n = 0
+        snapshot = settings.catalog_snapshot_path
+        if settings.catalog_snapshot and snapshot.is_file() and not session.exec(select(Product.id).limit(1)).first():
+            n = import_catalog(session, snapshot)  # fresh clone: load the committed catalog
+        n += seed_products(session)  # no-op unless the table is still empty
         if n:
             log.info("Seeded %d products", n)
     yield

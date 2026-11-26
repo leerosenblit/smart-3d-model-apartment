@@ -6,6 +6,7 @@ from pathlib import Path
 _TMP = Path(tempfile.mkdtemp(prefix="roomcraft-tests-"))
 os.environ["STORAGE_DIR"] = str(_TMP / "storage")
 os.environ["DATABASE_URL"] = f"sqlite:///{(_TMP / 'bootstrap.db').as_posix()}"
+os.environ["CATALOG_SNAPSHOT"] = ""
 os.environ["IMAGE_TO_3D_PROVIDER"] = "mock"
 os.environ["MOCK_GENERATION_SECONDS"] = "0.05"
 for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "TRIPO_API_KEY", "MESHY_API_KEY"):
