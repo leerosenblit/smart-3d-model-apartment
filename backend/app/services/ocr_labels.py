@@ -186,3 +186,113 @@ def room_hints(image_path: Path) -> list[RoomHint]:
     except Exception as exc:  # noqa: BLE001
         log.info("room hint extraction failed: %s", exc)
         return []
+
+
+# ----------------------------------------------------------------------------- window dimension labels
+
+@dataclass
+class DimLabel:
+    """A window label such as "100 / 200 / (+30)": width, height and sill height in cm, in image pixels."""
+
+    x_px: float
+    y_px: float
+    sill_cm: float
+    width_cm: Optional[float] = None
+    height_cm: Optional[float] = None
+
+
+_SILL = re.compile(r"^\(?\+(\d{2,3})\)?$")
+_NUM = re.compile(r"^\d{2,3}$")
+_DIM_SCALE = 2  # tesseract reads small dimension text far better when enlarged
+_DIM_ROTATIONS = (0, 270, 90)  # PIL angles: upright, then text that reads bottom-to-top / top-to-bottom
+
+
+def _tsv_words(img, cmd: str) -> list[Word]:
+    import tempfile
+
+    from PIL import Image  # noqa: F401  (type of img)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "dim.png"
+        img.save(path)
+        try:
+            out = subprocess.run([cmd, str(path), "stdout", "-l", "eng", "--psm", "11", "tsv"], capture_output=True, timeout=60)
+        except Exception as exc:  # noqa: BLE001
+            log.info("tesseract (dimension pass) failed: %s", exc)
+            return []
+    words: list[Word] = []
+    for row in csv.DictReader(io.StringIO(out.stdout.decode("utf-8", errors="replace")), delimiter="\t", quoting=csv.QUOTE_NONE):
+        try:
+            t = (row.get("text") or "").strip().strip("_-.,;:")
+            if t and float(row.get("conf") or -1) >= 30:
+                words.append(Word(t, float(row["conf"]), float(row["left"]), float(row["top"]), float(row["width"]), float(row["height"]), (0, 0, 0)))
+        except (KeyError, ValueError):
+            continue
+    return words
+
+
+def _labels_from_words(words: list[Word]) -> list[tuple[float, float, DimLabel]]:
+    """Sill tokens "(+30)" plus the two numbers stacked right above them -> (centre x, centre y, label)."""
+    nums = [w for w in words if _NUM.match(w.text)]
+    out: list[tuple[float, float, DimLabel]] = []
+    for w in words:
+        m = _SILL.match(w.text)
+        if not m or not (10 <= int(m.group(1)) <= 250):
+            continue
+        cx, cy = w.left + w.width / 2, w.top + w.height / 2
+        sill = float(m.group(1))
+        height = width = None
+        for n in nums:
+            dx = abs(n.left + n.width / 2 - cx)
+            dy = cy - (n.top + n.height / 2)
+            if dx > 0.6 * w.width or not 0 < dy <= 2.6 * w.height or n.height > 1.3 * w.height:
+                continue  # (a much taller box is two stacked lines merged into one bogus token)
+            row = round(dy / (1.1 * w.height))  # the stack is: width row, height row, sill row (bottom)
+            value = float(n.text)
+            if row == 1 and 40 <= value <= 260 and sill + value <= 280:
+                height = value
+            elif row == 2 and 40 <= value <= 400:
+                width = value
+        out.append((cx, cy, DimLabel(0.0, 0.0, sill, width, height)))
+    return out
+
+
+def dimension_labels(image_path: Path) -> list[DimLabel]:
+    """Window labels printed in the margins of a plan: "width / height (+sill)" (needs Tesseract; else empty)."""
+    cmd = tesseract_cmd()
+    if not cmd:
+        return []
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from PIL import Image
+
+        with Image.open(image_path) as im:
+            gray = im.convert("L")
+        w0, h0 = gray.size
+        big = gray.resize((w0 * _DIM_SCALE, h0 * _DIM_SCALE), Image.LANCZOS)
+
+        def one(angle: int) -> list[DimLabel]:
+            img = big if angle == 0 else big.rotate(angle, expand=True)
+            found: list[DimLabel] = []
+            for cx, cy, lab in _labels_from_words(_tsv_words(img, cmd)):
+                cx, cy = cx / _DIM_SCALE, cy / _DIM_SCALE
+                if angle == 270:  # image rotated clockwise: (x', y') = (H - y, x)
+                    lab.x_px, lab.y_px = cy, h0 - cx
+                elif angle == 90:  # rotated counter-clockwise: (x', y') = (y, W - x)
+                    lab.x_px, lab.y_px = w0 - cy, cx
+                else:
+                    lab.x_px, lab.y_px = cx, cy
+                found.append(lab)
+            return found
+
+        with ThreadPoolExecutor(max_workers=len(_DIM_ROTATIONS)) as pool:
+            batches = list(pool.map(one, _DIM_ROTATIONS))
+    except Exception as exc:  # noqa: BLE001
+        log.info("dimension label extraction failed: %s", exc)
+        return []
+    merged: list[DimLabel] = []
+    for lab in (l for batch in batches for l in batch):  # the same label can be read by two passes
+        if not any(abs(m.x_px - lab.x_px) < 12 and abs(m.y_px - lab.y_px) < 12 for m in merged):
+            merged.append(lab)
+    return merged

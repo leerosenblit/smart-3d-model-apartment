@@ -34,6 +34,7 @@ class DetectedOpening:
     kind: str  # 'door' | 'window'
     center: float  # absolute position along the wall axis (cm)
     width: float
+    evidence: str = "width"  # what decided the kind: 'arc' | 'glazing' | 'context' | 'width'
 
 
 @dataclass
@@ -206,6 +207,137 @@ def _bridge_gaps(rects: list[_Rect]) -> list[_Rect]:
         rects = [r for k, r in enumerate(rects) if k not in (i, j)] + [merged]
 
 
+# ----------------------------------------------------------------------------- door / window classification
+
+ARC_MIN_FRACTION = 0.4  # share of a quarter-circle that must be inked (door swings are often dashed)
+GLAZING_ROW_COVERAGE = 0.7  # a glazing line must span this share of the gap
+EXTERIOR_MARGIN_CM = 40.0
+
+
+def _dilate1(m: np.ndarray) -> np.ndarray:
+    out = m.copy()
+    out[1:] |= m[:-1]
+    out[:-1] |= m[1:]
+    out[:, 1:] |= m[:, :-1]
+    out[:, :-1] |= m[:, 1:]
+    return out
+
+
+def _sample_fraction(ink: np.ndarray, xs: np.ndarray, ys: np.ndarray) -> float:
+    h, w = ink.shape
+    xi, yi = np.rint(xs).astype(int), np.rint(ys).astype(int)
+    ok = (xi >= 0) & (xi < w) & (yi >= 0) & (yi < h)
+    if ok.sum() < len(xs) * 0.6:
+        return 0.0  # arc mostly outside the image
+    return float(ink[yi[ok], xi[ok]].mean())
+
+
+def _door_swing(ink: np.ndarray, orient: str, cc: float, lo: float, hi: float, t: float, ppc: float) -> bool:
+    """True when a quarter-circle door-swing arc (solid or dashed) hangs off either jamb of the gap.
+
+    ``lo``/``hi`` are the gap ends along the wall axis, ``cc`` the wall centre-line, all in cm.
+    """
+    width = (hi - lo) * ppc
+    if width < 8:
+        return False
+    theta = np.radians(np.linspace(15, 80, 36))
+    cos, sin = np.cos(theta), np.sin(theta)
+
+    def point(hinge: float, along: float, side: float, radius: float) -> tuple[np.ndarray, np.ndarray]:
+        s = hinge * ppc + along * radius * cos  # along-axis pixel coordinate
+        c = cc * ppc + side * radius * sin  # cross-axis pixel coordinate
+        return (s, c) if orient == "h" else (c, s)
+
+    arc_best, radius = 0.0, width
+    best_cfg: tuple[float, float, float] | None = None  # (hinge, direction along the wall, swing side)
+    for hinge, along in ((lo, 1.0), (hi, -1.0)):
+        for side in (-1.0, 1.0):
+            for mult in np.linspace(0.6, 1.1, 11):  # the leaf is often a bit shorter than the measured gap
+                arc = _sample_fraction(ink, *point(hinge, along, side, width * mult))
+                if arc > arc_best:
+                    arc_best, radius, best_cfg = arc, width * mult, (hinge, along, side)
+    if best_cfg is None or arc_best < 0.25:
+        return False
+    hinge, along, side = best_cfg
+    r = radius
+    control = max(
+        _sample_fraction(ink, *point(hinge, along, side, r * 0.78)),
+        _sample_fraction(ink, *point(hinge, along, side, r * 1.28)),
+    )
+    if arc_best < 2.5 * control:
+        return False
+    # hatching / dotted textures (balconies, tiles) ink everything: the arc must stand out from its surroundings
+    s0, s1 = sorted((hinge * ppc, hinge * ppc + along * r))
+    c0, c1 = sorted((cc * ppc, cc * ppc + side * r))
+    box = ink[max(0, int(c0)):int(c1) + 1, max(0, int(s0)):int(s1) + 1] if orient == "h" else ink[max(0, int(s0)):int(s1) + 1, max(0, int(c0)):int(c1) + 1]
+    if box.size and arc_best < 2.2 * float(box.mean()):
+        return False
+    if arc_best >= ARC_MIN_FRACTION:
+        return True
+    # a weaker arc is accepted when the straight door leaf (hinge -> open position) is drawn as well
+    steps = np.linspace(t * ppc / 2 + 2, r - 2, 24)
+    s = np.full_like(steps, hinge * ppc)
+    c = cc * ppc + side * steps
+    leaf = _sample_fraction(ink, *((s, c) if orient == "h" else (c, s)))
+    return leaf >= 0.75
+
+
+def _glazing_lines(ink: np.ndarray, orient: str, cc: float, lo: float, hi: float, t: float, ppc: float) -> int:
+    """Number of thin lines running along the wall axis across the gap (the window-frame symbol)."""
+    margin = 0.15 * (hi - lo)
+    a0, a1 = int(round((lo + margin) * ppc)), int(round((hi - margin) * ppc))
+    half = t * ppc / 2 + 2
+    c0, c1 = int(round(cc * ppc - half)), int(round(cc * ppc + half)) + 1
+    if a1 - a0 < 4 or c1 - c0 < 2 or min(a0, c0) < 0:
+        return 0
+    sub = ink[c0:c1, a0:a1] if orient == "h" else ink[a0:a1, c0:c1].T
+    if sub.size == 0:
+        return 0
+    sub = sub.copy()
+    sub[1:] |= sub[:-1].copy()  # tolerate a slightly skewed scan
+    rows = sub.mean(axis=1) >= GLAZING_ROW_COVERAGE
+    lines, prev = 0, False
+    for on in rows:
+        if on and not prev:
+            lines += 1
+        prev = bool(on)
+    return lines
+
+
+def _classify_openings(
+    rects: list[_Rect], ink: np.ndarray, faint: np.ndarray, thick: np.ndarray, ppc: float
+) -> None:
+    """Decide door vs window for every bridged gap from what is drawn in/around it.
+
+    1. a door-swing arc next to the gap -> door
+    2. two or more parallel frame lines across the gap -> window (patio-door sized gaps stay doors)
+    3. otherwise context: exterior walls favour windows, interior openings are doors; the gap width
+       only breaks the tie (<=110 cm door, 110-200 cm window on an exterior wall, wider = patio door)
+    """
+    if not rects:
+        return
+    xs0 = min(r.a0 if r.orient == "h" else r.cc for r in rects)
+    xs1 = max(r.a1 if r.orient == "h" else r.cc for r in rects)
+    ys0 = min(r.cc if r.orient == "h" else r.a0 for r in rects)
+    ys1 = max(r.cc if r.orient == "h" else r.a1 for r in rects)
+    arc_ink = _dilate1(faint & ~_dilate1(thick))  # door arcs are thin lines; ignore the thick walls they graze (+-1 px slack)
+    for r in rects:
+        edge = (ys0, ys1) if r.orient == "h" else (xs0, xs1)
+        exterior = min(abs(r.cc - edge[0]), abs(r.cc - edge[1])) <= EXTERIOR_MARGIN_CM
+        for o in r.openings:
+            lo, hi = o.center - o.width / 2, o.center + o.width / 2
+            if _door_swing(arc_ink, r.orient, r.cc, lo, hi, r.t, ppc):
+                o.kind, o.evidence = "door", "arc"
+            elif _glazing_lines(ink, r.orient, r.cc, lo, hi, r.t, ppc) >= 2:
+                o.kind, o.evidence = ("window" if o.width <= WIDE_DOOR_CM else "door"), "glazing"
+            else:
+                if o.width <= DOOR_MAX_CM or o.width > WIDE_DOOR_CM:
+                    o.kind = "door"
+                else:
+                    o.kind = "window" if exterior else "door"
+                o.evidence = "context" if exterior else "width"
+
+
 def _snap_junctions(rects: list[_Rect]) -> None:
     """Snap wall ends that touch a perpendicular wall onto that wall's centre-line."""
     for a in rects:
@@ -335,17 +467,22 @@ def detect_walls(img: Image.Image, pixels_per_cm: float, include_thin: bool = Tr
     rects = _rects_from_mask(hmask, "h", ppc, t_min, t_max, l_min) + _rects_from_mask(
         vmask, "v", ppc, t_min, t_max, l_min
     )
-    # hollow partitions (two thin parallel lines) inside the area spanned by the solid walls
+    ink_thin: np.ndarray | None = None
+    ink_faint: np.ndarray | None = None
     if rects and include_thin:
+        rgb = np.asarray(img.convert("RGB")).astype(np.int32)
+        lum = (rgb[..., 0] * 299 + rgb[..., 1] * 587 + rgb[..., 2] * 114) // 1000
+        ink_thin = ((rgb.max(axis=2) - rgb.min(axis=2)) > 38) | (lum < 150)
+        # dashed door-swing arcs are drawn in light grey on many scans: a more permissive ink for them only
+        ink_faint = ((rgb.max(axis=2) - rgb.min(axis=2)) > 38) | (lum < 205)
+    # hollow partitions (two thin parallel lines) inside the area spanned by the solid walls
+    if rects and ink_thin is not None:
         lim = (
             min(min(r.a0, r.cc) if r.orient == "h" else r.cc for r in rects) - 10,
             min(r.cc if r.orient == "h" else r.a0 for r in rects) - 10,
             max(max(r.a1, r.cc) if r.orient == "h" else r.cc for r in rects) + 10,
             max(r.cc if r.orient == "h" else r.a1 for r in rects) + 10,
         )
-        rgb = np.asarray(img.convert("RGB")).astype(np.int32)
-        lum = (rgb[..., 0] * 299 + rgb[..., 1] * 587 + rgb[..., 2] * 114) // 1000
-        ink_thin = ((rgb.max(axis=2) - rgb.min(axis=2)) > 38) | (lum < 150)
         for t in _thin_partitions(ink_thin, ppc, lim):
             if not any(
                 r.orient == t.orient and abs(r.cc - t.cc) <= max(r.t, t.t) and min(r.a1, t.a1) - max(r.a0, t.a0) > 0.5 * (t.a1 - t.a0)
@@ -359,6 +496,8 @@ def detect_walls(img: Image.Image, pixels_per_cm: float, include_thin: bool = Tr
             ):
                 rects.append(t)
     rects = _bridge_gaps(rects)
+    if ink_thin is not None:
+        _classify_openings(rects, ink_thin, ink_faint, hmask | vmask, ppc)
     _snap_junctions(rects)
     rects = _dedupe(rects)
 
@@ -381,6 +520,109 @@ def detect_walls(img: Image.Image, pixels_per_cm: float, include_thin: bool = Tr
             walls.append(DetectedWall(cc, a0, cc, a1, t, ops, r.thin))
     walls.sort(key=lambda w: (round(w.y1), round(w.x1)))
     return walls
+
+
+# ----------------------------------------------------------------------------- window labels from the plan
+
+CEILING_CM = 270.0
+WINDOW_HEAD_CM = 215.0  # typical top edge of a window when its height is not printed
+MAX_LABEL_REACH_CM = 300.0  # a label may extend an exterior wall at most this far to reach its window
+
+
+@dataclass
+class WindowLabel:
+    """A printed "width / height (+sill)" window label, positioned in plan centimeters."""
+
+    x_cm: float
+    y_cm: float
+    sill_cm: float
+    width_cm: float | None = None
+    height_cm: float | None = None
+
+
+def apply_window_labels(walls: list[DetectedWall], labels: list[WindowLabel]) -> int:
+    """Use window labels printed outside the building to fix kinds, sills, sizes and to add missed windows.
+
+    A label sits in the margin next to the exterior wall it describes, centred on the window. It is matched
+    to the exterior wall on that side; an opening already detected there is turned into a window with the
+    printed sill, otherwise a new window is created. Returns the number of openings touched.
+    """
+    if not walls or not labels:
+        return 0
+    xmin = min(min(w.x1, w.x2) for w in walls)
+    xmax = max(max(w.x1, w.x2) for w in walls)
+    ymin = min(min(w.y1, w.y2) for w in walls)
+    ymax = max(max(w.y1, w.y2) for w in walls)
+    touched = 0
+    for lab in labels:
+        if lab.y_cm < ymin - 5:
+            side = "top"
+        elif lab.y_cm > ymax + 5:
+            side = "bottom"
+        elif lab.x_cm < xmin - 5:
+            side = "left"
+        elif lab.x_cm > xmax + 5:
+            side = "right"
+        else:
+            continue  # inside the building: an elevation mark or a dimension, not a window label
+        horiz = side in ("top", "bottom")
+        pos = lab.x_cm if horiz else lab.y_cm
+        edge = {"top": ymin, "bottom": ymax, "left": xmin, "right": xmax}[side]
+        best: tuple[float, DetectedWall, float, float] | None = None  # (gap to label, wall, a0, a1)
+        for w in walls:
+            if (w.y1 == w.y2) != horiz:
+                continue
+            cc = w.y1 if horiz else w.x1
+            if abs(cc - edge) > EXTERIOR_MARGIN_CM + 5:
+                continue
+            a0, a1 = (min(w.x1, w.x2), max(w.x1, w.x2)) if horiz else (min(w.y1, w.y2), max(w.y1, w.y2))
+            gap = max(a0 - pos, pos - a1, 0.0)
+            if gap <= MAX_LABEL_REACH_CM and (best is None or gap < best[0]):
+                best = (gap, w, a0, a1)
+        if best is None:
+            continue
+        _, wall, a0, a1 = best
+        sill = float(lab.sill_cm)
+        width = lab.width_cm
+        if best[0] > 0:
+            # the window fills the whole stretch of exterior wall up to the corner, so no wall segment was detected
+            # there: grow the nearest exterior wall over it (up to the corner of the building)
+            lo_lim, hi_lim = (xmin, xmax) if horiz else (ymin, ymax)
+            reach = (width or 100.0) / 2 + 10
+            new_a0, new_a1 = min(a0, max(lo_lim, pos - reach)), max(a1, min(hi_lim, pos + reach))
+            shift = a0 - new_a0
+            if horiz:
+                wall.x1, wall.x2 = new_a0, new_a1
+            else:
+                wall.y1, wall.y2 = new_a0, new_a1
+            for o in wall.openings:
+                o["offsetCm"] += shift
+            a0, a1 = new_a0, new_a1
+        at = pos - a0
+        match: dict | None = None
+        for o in wall.openings:
+            d = abs(o["offsetCm"] - at)
+            if d <= max(35.0, 0.6 * o["widthCm"]) and (match is None or d < abs(match["offsetCm"] - at)):
+                match = o
+        if match is not None:
+            if width is not None and not 0.5 * match["widthCm"] <= width <= 2.0 * match["widthCm"]:
+                width = None  # OCR slip: keep the width measured from the drawing
+            width = width or match["widthCm"]
+        else:
+            width = width or 100.0
+        height = lab.height_cm or min(max(WINDOW_HEAD_CM - sill, 60.0), CEILING_CM - sill - 5)
+        height = min(height, CEILING_CM - sill)
+        opening = {"kind": "window", "offsetCm": at, "widthCm": float(width), "heightCm": float(height), "sillCm": sill}
+        if match is not None:
+            match.update({**opening, "offsetCm": match["offsetCm"]})
+        else:
+            half = width / 2
+            if (a1 - a0) < width:
+                continue
+            opening["offsetCm"] = float(round(min(max(at, half), (a1 - a0) - half)))
+            wall.openings.append(opening)
+        touched += 1
+    return touched
 
 
 # ----------------------------------------------------------------------------- automatic scale

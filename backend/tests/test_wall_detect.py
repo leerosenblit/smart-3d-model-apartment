@@ -156,3 +156,99 @@ def test_scale_estimate_ignores_thin_partitions():
 
     _, ppc, estimated = detect_walls_auto(_room_with_hollow_partition(), None)
     assert estimated and abs(ppc - PPC) / PPC < 0.15  # solid 10 px walls = 20 cm -> 0.5 px/cm
+
+
+# ----------------------------------------------------------------------------- door / window classification
+
+def _room_with_gap(gap0: int, gap1: int, draw) -> Image.Image:
+    """Blue room whose TOP wall has a gap [gap0, gap1] px; ``draw(d)`` adds the symbol drawn in the gap."""
+    img = Image.new("RGB", (400, 300), "white")
+    d = ImageDraw.Draw(img)
+    x0, y0, x1, y1, t = 50, 60, 350, 250, 10
+    d.rectangle([x0 - t / 2, y0 - t / 2, gap0, y0 + t / 2], fill=BLUE)
+    d.rectangle([gap1, y0 - t / 2, x1 + t / 2, y0 + t / 2], fill=BLUE)
+    d.rectangle([x0 - t / 2, y0 - t / 2, x0 + t / 2, y1 + t / 2], fill=BLUE)
+    d.rectangle([x1 - t / 2, y0 - t / 2, x1 + t / 2, y1 + t / 2], fill=BLUE)
+    d.rectangle([x0 - t / 2, y1 - t / 2, x1 + t / 2, y1 + t / 2], fill=BLUE)
+    draw(d)
+    return img
+
+
+def test_narrow_gap_with_frame_lines_is_a_window_not_a_door():
+    def frame(d):  # three thin lines (4 px apart) across a 44 px (= 88 cm) gap: the window symbol
+        for y in (56, 60, 64):
+            d.line([(150, y), (194, y)], fill=(40, 40, 40), width=1)
+
+    walls = detect_walls(_room_with_gap(150, 194, frame), PPC)
+    top = min((w for w in walls if w.y1 == w.y2), key=lambda w: w.y1)
+    assert [o["kind"] for o in top.openings] == ["window"]
+    assert top.openings[0]["sillCm"] == 90
+
+
+def test_door_swing_arc_makes_a_wide_gap_a_door():
+    def swing(d):  # 70 px (= 140 cm) gap; leaf + dashed quarter arc swinging into the room
+        d.line([(150, 65), (150, 135)], fill=(60, 60, 60), width=1)
+        d.arc([80, 65 - 70, 220, 65 + 70], 0, 90, fill=(60, 60, 60), width=1)
+
+    walls = detect_walls(_room_with_gap(150, 220, swing), PPC)
+    top = min((w for w in walls if w.y1 == w.y2), key=lambda w: w.y1)
+    assert [o["kind"] for o in top.openings] == ["door"]  # without the arc a 140 cm exterior gap would be a window
+
+
+def test_plain_exterior_gap_keeps_the_width_rule():
+    walls = detect_walls(_room_with_gap(150, 220, lambda d: None), PPC)
+    top = min((w for w in walls if w.y1 == w.y2), key=lambda w: w.y1)
+    assert [o["kind"] for o in top.openings] == ["window"]  # 140 cm on an exterior wall, nothing drawn
+
+
+# ----------------------------------------------------------------------------- window labels
+
+def _box_walls():
+    from app.services.wall_detect import DetectedWall
+
+    return [
+        DetectedWall(0, 0, 600, 0, 20, [{"kind": "door", "offsetCm": 200, "widthCm": 88, "heightCm": 210, "sillCm": 0}]),
+        DetectedWall(600, 0, 600, 400, 20),
+        DetectedWall(0, 400, 600, 400, 20),
+        DetectedWall(0, 0, 0, 400, 20),
+    ]
+
+
+def test_window_label_converts_a_door_sized_gap_into_a_window_with_sill():
+    from app.services.wall_detect import WindowLabel, apply_window_labels
+
+    walls = _box_walls()
+    n = apply_window_labels(walls, [WindowLabel(205, -40, 30, 100, 200)])  # label above the top wall
+    assert n == 1
+    (o,) = walls[0].openings
+    assert o["kind"] == "window" and o["sillCm"] == 30 and o["heightCm"] == 200
+    assert o["widthCm"] == 100 and o["offsetCm"] == 200
+
+
+def test_window_label_creates_a_missed_window_and_defaults_the_height():
+    from app.services.wall_detect import WindowLabel, apply_window_labels
+
+    walls = _box_walls()
+    assert apply_window_labels(walls, [WindowLabel(450, 440, 110)]) == 1  # below the bottom wall, no size printed
+    (o,) = walls[2].openings
+    assert o["kind"] == "window" and o["sillCm"] == 110 and o["widthCm"] == 100
+    assert o["heightCm"] == 105  # head at ~215 cm
+    assert abs(o["offsetCm"] - 450) <= 1
+
+
+def test_labels_inside_the_building_or_far_from_walls_are_ignored():
+    from app.services.wall_detect import WindowLabel, apply_window_labels
+
+    walls = _box_walls()
+    assert apply_window_labels(walls, [WindowLabel(300, 200, 110), WindowLabel(1500, -50, 30)]) == 0
+
+
+def test_label_parser_reads_sill_and_the_stacked_numbers():
+    from app.services.ocr_labels import Word, _labels_from_words
+
+    def w(text, cx, cy, h=14):
+        return Word(text, 90, cx - 15, cy - h / 2, 30, h, (0, 0, 0))
+
+    words = [w("100", 131, 42), w("200", 131, 64), Word("(+30)", 95, 106, 75, 50, 19, (0, 0, 0)), w("210", 254, 42)]
+    ((_, _, lab),) = _labels_from_words(words)
+    assert (lab.sill_cm, lab.width_cm, lab.height_cm) == (30, 100, 200)

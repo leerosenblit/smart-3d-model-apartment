@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, UploadFile
 from ..config import get_settings
 from ..schemas import DetectedWallRead, DetectWallsRequest, DetectWallsResult, FloorplanUploadResult, RoomHintRead
 from ..services import ocr_labels
-from ..services.wall_detect import detect_walls_auto
+from ..services.wall_detect import WindowLabel, apply_window_labels, detect_walls_auto
 
 router = APIRouter(prefix="/api/floorplans", tags=["floorplans"])
 
@@ -105,15 +105,22 @@ def detect_floorplan_walls(body: DetectWallsRequest):
         raise HTTPException(404, "Floorplan not found")
     from concurrent.futures import ThreadPoolExecutor
 
-    # OCR (room names printed on the plan; needs Tesseract + Hebrew data, else empty) runs in parallel
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    # OCR (room names and window labels printed on the plan; needs Tesseract, else empty) runs in parallel
+    with ThreadPoolExecutor(max_workers=2) as pool:
         ocr_future = pool.submit(ocr_labels.room_hints, path)
+        dim_future = pool.submit(ocr_labels.dimension_labels, path)
         try:
             with Image.open(path) as im:
                 walls, ppc, estimated = detect_walls_auto(im, body.pixels_per_cm)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(422, f"Could not analyse floorplan: {exc}") from exc
         raw_hints = ocr_future.result()
+        raw_dims = dim_future.result()
+    if ppc and walls and raw_dims:
+        apply_window_labels(
+            walls,
+            [WindowLabel(d.x_px / ppc, d.y_px / ppc, d.sill_cm, d.width_cm, d.height_cm) for d in raw_dims],
+        )
     hints: list[RoomHintRead] = []
     if ppc and walls:
         hints = [
